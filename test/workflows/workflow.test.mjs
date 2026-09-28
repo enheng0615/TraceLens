@@ -402,6 +402,39 @@ test("workflow stores reports by batch time, Session, then GT", async () => {
   assert.equal(await readFile(path.join(item.rcaOutputDir, "rca-report.md"), "utf8"), "# report\n");
 });
 
+test("workflow completes with an explicit evidence-gap status for analyzable partial Trace", async () => {
+  const calls = { ensureTrace: [], cases: [] };
+  const output = await mkdtemp(path.join(os.tmpdir(), "trace-rca-partial-evidence-"));
+  const boundary = {
+    schemaVersion: "trace-evidence-boundary-v1",
+    classification: "partial_analyzable",
+    analysisAllowed: true,
+    negativeEvidenceEligible: false,
+    missingSegments: [{ spanId: "span-cut", spanType: "TOOL", toolName: "bash", field: "output", observedChars: 100, recovery: { code: "EXPANDED_RESULT_HTTP_ERROR" } }],
+  };
+  const deps = dependencies(calls);
+  deps.ensureTrace = async ({ sessionId }) => {
+    calls.ensureTrace.push(sessionId);
+    return { traceRoot: `/trace/${sessionId}`, source: "cache", evidenceBoundary: boundary };
+  };
+  deps.runRca = async ({ casePath, outputDir }) => {
+    const data = JSON.parse(await readFile(casePath, "utf8"));
+    calls.cases.push(data);
+    return { outputDir, evidenceBoundary: data.traceEvidenceBoundary };
+  };
+  const result = await runSingleSessionTraceRcaWorkflow({
+    sessionId: "1", machineGrading: '{"未命中GT":"g"}', idaAnswer: "a",
+    workflowOutputRoot: output, dependencies: deps,
+  });
+  assert.equal(result.status, "completed_with_evidence_gaps");
+  assert.equal(result.items[0].status, "completed_with_evidence_gaps");
+  assert.equal(result.counts.completed, 1);
+  assert.equal(result.counts.completedWithEvidenceGaps, 1);
+  assert.equal(calls.cases[0].traceEvidenceBoundary.missingSegments[0].toolName, "bash");
+  const manifest = JSON.parse(await readFile(result.manifestPath, "utf8"));
+  assert.equal(manifest.items[0].evidenceBoundary.negativeEvidenceEligible, false);
+});
+
 test("CSV workflow records upstream source failures without counting them as RCA failures", async () => {
   const calls = { ensureTrace: [], cases: [] };
   const output = await mkdtemp(path.join(os.tmpdir(), "trace-rca-source-run-failed-"));

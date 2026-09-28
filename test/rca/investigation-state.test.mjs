@@ -9,3 +9,9 @@ test("normalizes action subjects and detects no-progress rounds", () => {
   assert.deepEqual(updated, { progressed: false, stallCount: 2 });
   assert.match(workingState({ coverage, stallCount: 2 }).instruction, /unobservable/);
 });
+
+test("irrelevant new evidence does not reset a stable coverage stall", () => {
+  const coverage = { checks: [{ description: "search GT", ok: false }], missing: ["search GT"] };
+  const result = updateStallCount({ previousEvidenceCount: 3, evidenceCount: 9, previousCoverageSignature: coverageSignature(coverage), coverage, stallCount: 2 });
+  assert.deepEqual(result, { progressed: false, stallCount: 3 });
+});

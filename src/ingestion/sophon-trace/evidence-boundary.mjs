@@ -8,6 +8,9 @@ const STRUCTURAL_WARNING_PATTERNS = [
   /references a Trace absent/i,
   /Payload mismatch/i,
 ];
+const LOCAL_TOOL_GAP_WARNING_PATTERNS = [
+  /Unrecovered server-side truncation markers were detected/i,
+];
 
 async function readSpan(traceRoot, spanId) {
   if (!traceRoot || !spanId) return null;
@@ -76,15 +79,17 @@ export async function buildTraceEvidenceBoundary({ traceRoot, integrity } = {}) 
   }
 
   const collectorResult = report.completeness ?? report.result ?? "unknown";
-  const complete = report.complete === true || [
+  const collectorClaimsComplete = report.complete === true || [
     "complete",
     "complete_no_observed_truncation",
     "complete_with_recovered_truncation",
   ].includes(collectorResult);
+  const complete = collectorClaimsComplete && warnings.length === 0 && missingSegments.length === 0;
   const onlyLocalRecoverableGaps = !complete &&
     structuralWarnings.length === 0 &&
+    warnings.every((warning) => LOCAL_TOOL_GAP_WARNING_PATTERNS.some((pattern) => pattern.test(String(warning)))) &&
     missingSegments.length > 0 &&
-    missingSegments.every((segment) => segment.spanType === "TOOL" || segment.spanType === null);
+    missingSegments.every((segment) => segment.spanType === "TOOL");
   const classification = complete
     ? "complete"
     : onlyLocalRecoverableGaps ? "partial_analyzable" : "partial_critical";
@@ -105,4 +110,3 @@ export async function buildTraceEvidenceBoundary({ traceRoot, integrity } = {}) 
         : "Trace存在结构性或不可定位的关键缺口，当前不可安全归因。",
   };
 }
-

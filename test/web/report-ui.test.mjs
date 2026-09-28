@@ -54,7 +54,13 @@ test("CSV batch detail exposes a batch-scoped Session workspace", async () => {
   assert.match(html, /id="batch-session-overview"/);
   assert.match(html, /id="batch-session-grid"/);
   assert.match(html, /id="batch-session-status"/);
+  assert.match(html, /id="batch-session-selection"/);
+  assert.match(html, /id="batch-retry-selected"/);
   assert.match(app, /function renderBatchSessionOverview/);
+  assert.match(app, /data-batch-select/);
+  assert.match(app, /selected_sessions/);
+  assert.doesNotMatch(app, /<button class="batch-session-card/);
+  assert.match(app, /<article class="batch-session-card/);
   assert.match(app, /function sessionEvents/);
   assert.match(app, /仅展示当前批次/);
   assert.match(app, /function sessionRowLabel/);

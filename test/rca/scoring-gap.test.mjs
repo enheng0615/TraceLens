@@ -101,6 +101,8 @@ test("registers grader causal language as provenance and revalidates the normali
   const first = validateScoringGapTarget(candidate, localCase);
   assert.equal(first.valid, true);
   assert.equal(first.target.sourceRegistry.some((source) => source.sourceType === "grader_claim"), true);
+  assert.deepEqual(first.target.sourceAttribution.criterion, ["SRC-GT-CRITERION"]);
+  assert.deepEqual(first.target.sourceAttribution.officialGraderReason, ["SRC-GRADER-001"]);
   assert.equal(first.target.requiredState.elements[0].description, "要求呈现：人力相对增长较小");
   const second = validateScoringGapTarget(first.target, localCase);
   assert.equal(second.valid, true);

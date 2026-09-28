@@ -6,6 +6,7 @@ const state = {
   activeCriterionKey: null,
   batchSessionQuery: "",
   batchSessionStatus: "all",
+  selectedBatchSessions: new Set(),
   currentJob: null,
   detailReturnView: "reports",
   csvFile: null,
@@ -17,7 +18,7 @@ const state = {
 
 const titles = { workspace: "Trace RCA", "session-new": "单 Session 归因", "csv-new": "批量 CSV 归因", reports: "归因报告", history: "运行历史", detail: "报告详情", settings: "运行配置" };
 const statusNames = {
-  queued: "等待处理", running: "运行中", completed: "已完成", completed_with_failures: "部分失败",
+  queued: "等待处理", running: "运行中", completed: "已完成", completed_with_evidence_gaps: "完成 · Trace局部不完整", completed_with_failures: "部分失败",
   completed_no_action: "无需归因", source_run_failed: "源任务未运行", failed: "失败", cancelled: "已取消",
 };
 const stageNames = {
@@ -106,7 +107,7 @@ function bindJobRows() {
 
 function updateDashboard() {
   const running = state.jobs.filter((job) => ["queued", "running"].includes(job.status)).length;
-  const completed = state.jobs.filter((job) => ["completed", "completed_no_action"].includes(job.status)).length;
+  const completed = state.jobs.filter((job) => ["completed", "completed_with_evidence_gaps", "completed_no_action"].includes(job.status)).length;
   const failed = state.jobs.filter((job) => ["failed", "completed_with_failures"].includes(job.status)).length;
   $("#metric-running").textContent = running;
   $("#metric-completed").textContent = completed;
@@ -273,6 +274,11 @@ function normalizedSessionStatus(session) {
   return session.status === "completed_with_failures" ? "failed" : (session.status || "running");
 }
 
+function updateBatchSelectionControls() {
+  $("#batch-selection-count").textContent = `已选择 ${state.selectedBatchSessions.size} 个 Session`;
+  $("#batch-retry-selected").disabled = state.selectedBatchSessions.size === 0;
+}
+
 function sessionEvents(job, session) {
   if (!session) return [];
   const id = String(session.sessionId || "");
@@ -289,6 +295,9 @@ function renderBatchSessionOverview(job) {
   if (job.type !== "csv") { panel.hidden = true; return; }
   panel.hidden = false;
   const sessions = job.reportTree?.sessions || [];
+  const selectionEnabled = job.retry?.canRetrySelectedSessions === true;
+  const selectable = new Map((selectionEnabled ? job.retry?.selectableSessions || [] : []).map((item) => [item.retryKey, item]));
+  for (const key of [...state.selectedBatchSessions]) if (!selectable.has(key)) state.selectedBatchSessions.delete(key);
   const query = state.batchSessionQuery.trim().toLowerCase();
   const status = state.batchSessionStatus;
   const visible = sessions.filter((session) => {
@@ -303,20 +312,29 @@ function renderBatchSessionOverview(job) {
   $("#batch-session-summary").textContent = `${formatTime(job.reportTree?.batch?.createdAt || job.createdAt)} · 仅展示当前批次 · ${startedRows}/${totalRows} 已进入处理 · 满分题不展示`;
   $("#batch-session-stats").innerHTML = [
     ["all", "非满分题", totalRows], ["queued", "等待处理", count("queued")], ["running", "运行中", count("running")],
-    ["completed", "已完成", count("completed")], ["failed", "失败", count("failed")],
+    ["completed", "已完成", count("completed")], ["completed_with_evidence_gaps", "Trace有缺口", count("completed_with_evidence_gaps")], ["failed", "失败", count("failed")],
     ["source_run_failed", "源任务未运行", count("source_run_failed")],
   ].map(([key,label,value]) => `<button class="batch-stat ${state.batchSessionStatus === key ? "active" : ""}" data-batch-status="${key}"><strong>${value}</strong><span>${label}</span></button>`).join("");
+  const selectionPanel = $("#batch-session-selection");
+  selectionPanel.hidden = !selectionEnabled;
+  updateBatchSelectionControls();
   $("#batch-session-grid").innerHTML = visible.length ? visible.map((session) => `
-    <button class="batch-session-card ${session.key === state.activeSessionKey ? "active" : ""}" data-batch-session="${escapeHtml(session.key)}">
-      <span class="batch-session-card-head"><span class="session-node-icon">${icon("session")}</span>${statusBadge(session.status)}</span>
+    <article class="batch-session-card ${session.key === state.activeSessionKey ? "active" : ""} ${state.selectedBatchSessions.has(session.retryKey) ? "selected" : ""}">
+      <span class="batch-session-card-head"><span class="batch-session-leading">${selectable.has(session.retryKey) ? `<label class="batch-session-check"><input type="checkbox" data-batch-select="${escapeHtml(session.retryKey)}" ${state.selectedBatchSessions.has(session.retryKey) ? "checked" : ""}><span class="sr-only">选择 ${escapeHtml(sessionLabel(session))} 进行重跑</span></label>` : ""}<span class="session-node-icon">${icon("session")}</span></span>${statusBadge(session.status)}</span>
       <strong>${escapeHtml(sessionLabel(session))}</strong>
       <span class="batch-session-row">${escapeHtml(sessionRowLabel(session))}</span>
       <small>${session.issue ? escapeHtml(session.issue.label || "源任务没有可归因结果") : `${session.counts.criteria} 个 GT · ${session.counts.completed} 完成 · ${session.counts.failed} 失败`}</small>
-      <span class="batch-session-open">查看该 Session ${icon("chevron")}</span>
-    </button>`).join("") : `<div class="empty-list batch-empty"><strong>没有符合条件的 Session</strong>调整搜索词或状态筛选。</div>`;
+      <button type="button" class="batch-session-open" data-batch-session="${escapeHtml(session.key)}">查看该 Session ${icon("chevron")}</button>
+    </article>`).join("") : `<div class="empty-list batch-empty"><strong>没有符合条件的 Session</strong>调整搜索词或状态筛选。</div>`;
   $("#batch-session-search").value = state.batchSessionQuery;
   $("#batch-session-status").value = state.batchSessionStatus;
   $$('[data-batch-status]').forEach((button) => button.addEventListener("click", () => { state.batchSessionStatus = button.dataset.batchStatus; renderBatchSessionOverview(job); }));
+  $$('[data-batch-select]').forEach((checkbox) => checkbox.addEventListener("change", () => {
+    if (checkbox.checked) state.selectedBatchSessions.add(checkbox.dataset.batchSelect);
+    else state.selectedBatchSessions.delete(checkbox.dataset.batchSelect);
+    checkbox.closest(".batch-session-card")?.classList.toggle("selected", checkbox.checked);
+    updateBatchSelectionControls();
+  }));
   $$('[data-batch-session]').forEach((button) => button.addEventListener("click", () => {
     state.activeSessionKey = button.dataset.batchSession;
     state.activeCriterionKey = null;
@@ -336,7 +354,7 @@ function renderAttemptChain(job) {
     ...(job.relatedJobs || []),
   ].sort((a, b) => a.attempt - b.attempt);
   if (attempts.length <= 1) return "";
-  return `<div class="attempt-chain"><span>运行链</span>${attempts.map((item) => `<button class="attempt-chip ${item.current ? "current" : ""}" data-related-job="${escapeHtml(item.id)}"><strong>A${item.attempt}</strong><small>${escapeHtml(item.scope === "failed_only" ? "失败项复跑" : item.scope === "full" ? "完整重跑" : "首次运行")}</small>${statusBadge(item.status)}</button>`).join("")}</div>`;
+  return `<div class="attempt-chain"><span>运行链</span>${attempts.map((item) => `<button class="attempt-chip ${item.current ? "current" : ""}" data-related-job="${escapeHtml(item.id)}"><strong>A${item.attempt}</strong><small>${escapeHtml(item.scope === "failed_only" ? "失败项复跑" : item.scope === "selected_sessions" ? "指定Session复跑" : item.scope === "full" ? "完整重跑" : "首次运行")}</small>${statusBadge(item.status)}</button>`).join("")}</div>`;
 }
 
 function renderDetailHeader(job) {
@@ -345,7 +363,7 @@ function renderDetailHeader(job) {
   const canRetryFailed = job.retry?.canRetryFailed;
   const canRetryFull = job.retry?.canRetryFull;
   const attempt = Number(job.lineage?.attempt) || 1;
-  const attemptMeta = attempt > 1 ? ` · Attempt ${attempt} · ${job.lineage.scope === "failed_only" ? "仅失败项" : "完整重跑"}` : " · Attempt 1";
+  const attemptMeta = attempt > 1 ? ` · Attempt ${attempt} · ${job.lineage.scope === "failed_only" ? "仅失败项" : job.lineage.scope === "selected_sessions" ? "指定Session" : "完整重跑"}` : " · Attempt 1";
   $("#detail-header").innerHTML = `
     <div class="detail-title-row"><div><span class="detail-kicker">${escapeHtml(job.type.toUpperCase())} / ${escapeHtml(job.id)}${escapeHtml(attemptMeta)}</span><h2>${escapeHtml(jobTitle(job))}</h2><p>${escapeHtml(job.error || job.progress?.label || "正在准备运行")}</p></div><div class="detail-actions"><button class="button ghost" id="back-to-history">返回</button>${canRetryFailed ? `<button class="button retry-primary" id="retry-failed">${icon("retry")}仅重跑失败项</button>` : ""}${canRetryFull ? `<button class="button ghost" id="retry-full">完整重跑</button>` : ""}${canCancel ? `<button class="button danger" id="cancel-job">${icon("stop")}停止任务</button>` : ""}</div></div>
     ${renderAttemptChain(job)}
@@ -369,12 +387,17 @@ function openRetryDialog(job, scope) {
   state.retryScope = scope;
   const dialog = $("#retry-dialog");
   const failures = job.retry?.failedItems || [];
-  $("#retry-dialog-title").textContent = scope === "failed_only" ? "仅重跑失败项" : "完整重跑任务";
+  const selectedSessions = (job.retry?.selectableSessions || []).filter((item) => state.selectedBatchSessions.has(item.retryKey));
+  $("#retry-dialog-title").textContent = scope === "failed_only" ? "仅重跑失败项" : scope === "selected_sessions" ? "重跑指定 Session" : "完整重跑任务";
   $("#retry-dialog-description").textContent = scope === "failed_only"
     ? `将创建新的 Attempt，仅执行 ${failures.length} 个失败项。成功项、旧日志和失败摘要全部保留。`
+    : scope === "selected_sessions"
+      ? `将创建新的 Attempt，重跑已选择的 ${selectedSessions.length} 个 Session，以及这些 CSV 行中的全部未命中 GT。旧报告保持不变。`
     : "将复制原始输入并创建新的 Attempt，重新执行整个任务。旧任务不会被修改。";
   $("#retry-selection-preview").innerHTML = scope === "failed_only"
     ? failures.map((item) => `<label class="retry-item"><input type="checkbox" name="retry-item" value="${escapeHtml(item.retryKey)}" checked><span><strong>${escapeHtml(item.sessionId || "未知Session")}</strong><b>${escapeHtml(item.criterionId || item.stage || "准备阶段")}</b><small>${escapeHtml(item.error || "失败")}</small></span></label>`).join("")
+    : scope === "selected_sessions"
+      ? selectedSessions.map((item) => `<div><strong>Session ${escapeHtml(item.sessionId)}</strong><span>${escapeHtml(item.rowNumbers?.length ? `CSV 行 ${item.rowNumbers.join("、")}` : "按Session匹配")}</span><small>重跑该 Session 所选 CSV 行的全部未命中 GT</small></div>`).join("")
     : `<div><strong>全部输入</strong><span>${job.type === "csv" ? "整个CSV批次" : `Session ${escapeHtml(job.inputSummary.sessionId)}`}</span><small>重新执行拉取检查、准备和全部GT归因；完整Trace仍优先复用缓存。</small></div>`;
   $("#retry-max-rounds").value = job.inputSummary?.maxRounds || 20;
   $("#retry-concurrency-field").hidden = job.type !== "csv";
@@ -403,6 +426,7 @@ async function submitRetry(event) {
         mode: job.inputSummary?.mode || "live",
         reason: $("#retry-reason").value,
         selectedFailureKeys: state.retryScope === "failed_only" ? $$('input[name="retry-item"]:checked').map((item) => item.value) : undefined,
+        selectedSessionKeys: state.retryScope === "selected_sessions" ? [...state.selectedBatchSessions] : undefined,
       }),
     });
     $("#retry-dialog").close();
@@ -522,7 +546,10 @@ function renderReportWorkspace(job) {
   }));
 
   if (criterion) {
-    $("#report-context").innerHTML = `<nav class="breadcrumbs" aria-label="当前位置"><span>批次 ${formatTime(tree.batch.createdAt)}</span><svg><use href="#i-chevron"/></svg><span>Session ${escapeHtml(session.sessionId || session.key)}</span><svg><use href="#i-chevron"/></svg><span>${escapeHtml(sessionRowLabel(session))}</span><svg><use href="#i-chevron"/></svg><strong>${escapeHtml(criterion.criterionId)}</strong></nav><div class="report-context-title"><div><p class="kicker">GT ROOT CAUSE REPORT · ${escapeHtml(sessionRowLabel(session))}</p><h2>${escapeHtml(criterion.criterionId)}</h2></div>${statusBadge(criterion.status)}</div>${criterion.error ? `<p class="criterion-error" role="alert">${escapeHtml(criterion.error)}</p>` : ""}`;
+    const evidenceWarning = criterion.status === "completed_with_evidence_gaps"
+      ? `<p class="evidence-gap-warning" role="status">本报告基于可见Trace完成，但存在局部Tool输出缺口；请在“Trace完整性与证据边界”中查看具体Span、字段和补拉错误。</p>`
+      : "";
+    $("#report-context").innerHTML = `<nav class="breadcrumbs" aria-label="当前位置"><span>批次 ${formatTime(tree.batch.createdAt)}</span><svg><use href="#i-chevron"/></svg><span>Session ${escapeHtml(session.sessionId || session.key)}</span><svg><use href="#i-chevron"/></svg><span>${escapeHtml(sessionRowLabel(session))}</span><svg><use href="#i-chevron"/></svg><strong>${escapeHtml(criterion.criterionId)}</strong></nav><div class="report-context-title"><div><p class="kicker">GT ROOT CAUSE REPORT · ${escapeHtml(sessionRowLabel(session))}</p><h2>${escapeHtml(criterion.criterionId)}</h2></div>${statusBadge(criterion.status)}</div>${evidenceWarning}${criterion.error ? `<p class="criterion-error" role="alert">${escapeHtml(criterion.error)}</p>` : ""}`;
     return renderArtifactTabs(job, criterion.artifacts);
   }
   if (session && state.activeCriterionKey !== "__batch__") return renderSessionState(session);
@@ -618,6 +645,7 @@ async function openJob(id, origin = "reports") {
   state.activeCriterionKey = null;
   state.batchSessionQuery = "";
   state.batchSessionStatus = "all";
+  state.selectedBatchSessions = new Set();
   state.activeJobStatus = null;
   state.detailReturnView = origin;
   showView("detail");
@@ -643,6 +671,28 @@ async function initialize() {
   $("#report-search").addEventListener("input", () => { renderReports(); bindJobRows(); });
   $("#batch-session-search").addEventListener("input", (event) => { state.batchSessionQuery = event.target.value; if (state.currentJob) renderBatchSessionOverview(state.currentJob); });
   $("#batch-session-status").addEventListener("change", (event) => { state.batchSessionStatus = event.target.value; if (state.currentJob) renderBatchSessionOverview(state.currentJob); });
+  $("#batch-select-visible").addEventListener("click", () => {
+    const job = state.currentJob;
+    if (!job) return;
+    const selectable = new Set((job.retry?.selectableSessions || []).map((item) => item.retryKey));
+    const query = state.batchSessionQuery.trim().toLowerCase();
+    const status = state.batchSessionStatus;
+    for (const session of job.reportTree?.sessions || []) {
+      const current = normalizedSessionStatus(session);
+      const label = `${sessionLabel(session)} ${(session.rowNumbers || []).join(" ")}`.toLowerCase();
+      const shown = (!query || label.includes(query)) && (status === "all" || current === status || (status === "failed" && session.counts?.failed > 0));
+      if (shown && selectable.has(session.retryKey)) state.selectedBatchSessions.add(session.retryKey);
+    }
+    renderBatchSessionOverview(job);
+  });
+  $("#batch-clear-selection").addEventListener("click", () => {
+    state.selectedBatchSessions.clear();
+    if (state.currentJob) renderBatchSessionOverview(state.currentJob);
+  });
+  $("#batch-retry-selected").addEventListener("click", () => {
+    if (!state.currentJob || !state.selectedBatchSessions.size) return;
+    openRetryDialog(state.currentJob, "selected_sessions");
+  });
   const drop = $("#drop-zone");
   ["dragenter", "dragover"].forEach((name) => drop.addEventListener(name, (event) => { event.preventDefault(); drop.classList.add("dragging"); }));
   ["dragleave", "drop"].forEach((name) => drop.addEventListener(name, (event) => { event.preventDefault(); drop.classList.remove("dragging"); }));

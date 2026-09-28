@@ -4,342 +4,16 @@ import { copyFile, mkdir, readFile, readdir, rename, stat, writeFile } from "nod
 import path from "node:path";
 import { WebAuditLogger } from "./audit-logger.mjs";
 import { buildJobDiagnosis, renderWebFailureSummary } from "./job-diagnostics.mjs";
-import { readRcaCsv } from "../workflows/trace-rca/csv-input.mjs";
-import { isFullScore } from "../workflows/trace-rca/score-utils.mjs";
+import { isFullScore, readRcaCsv } from "../workflows/trace-rca/index.mjs";
+import { TERMINAL_JOB_STATUSES, WEB_FAILURE_JSON, WEB_FAILURE_MD, WEB_JOB_LOG } from "./job-model.mjs";
+import { calculateWorkflowProgress } from "./job-progress.mjs";
+import { buildReportTree, artifactLabel, criterionIdFromPath, sessionIdFromPath } from "./report-tree.mjs";
+import { effectiveAttemptItems, retryItemKey, selectableSessionCandidates, summarizeEffectiveItems } from "./retry-state.mjs";
 
-const TERMINAL = new Set(["completed", "completed_with_evidence_gaps", "completed_with_failures", "completed_no_action", "failed", "cancelled"]);
+// Backward-compatible exports for callers that imported these projections here.
+export { calculateWorkflowProgress, buildReportTree };
+
 const JOB_FILE = "job.json";
-const MAX_CAPTURED_LINES = 300;
-const RCA_PROGRESS_START = 30;
-const RCA_PROGRESS_END = 95;
-const WEB_JOB_LOG = "web-job.jsonl";
-const WEB_FAILURE_JSON = "web-failure-diagnosis.json";
-const WEB_FAILURE_MD = "web-failure-summary.md";
-
-function retryItemKey(item) {
-  return JSON.stringify([item?.rowNumber ?? null, String(item?.sessionId ?? ""), item?.criterionId ?? null, item?.caseId ?? null]);
-}
-
-function criterionIdFromPath(file) {
-  return String(file ?? "").match(/(?:^|[-/])(报告GT\d+|缺失GT\d+|GT-\d+)(?:[-/]|$)/)?.[1] ?? null;
-}
-
-function sessionIdFromPath(file) {
-  const matches = [...String(file ?? "").matchAll(/(?:^|[-/])session-(\d+)(?=[-/]|$)/g)];
-  return matches.at(-1)?.[1] ?? null;
-}
-
-function eventPhaseProgress(event, maxRounds = 20) {
-  const phase = String(event?.phase ?? "");
-  if (phase === "scoring_gap") return 0.06;
-  if (phase === "trace_map") return 0.14;
-  const round = Number.parseInt(phase.match(/investigation_round_(\d+)/)?.[1] ?? "0", 10);
-  if (round > 0) return Math.min(0.92, 0.16 + (round / Math.max(1, maxRounds)) * 0.74);
-  if (phase === "final_rca") return 0.97;
-  if (/complete/.test(phase)) return 1;
-  return 0;
-}
-
-/**
- * Calculate progress across the complete workflow, not just the current RCA round.
- * Trace collection owns 0-30%; all missed-GT RCA cases share 30-95%; terminal
- * completion owns 100%. `previous` keeps polling updates monotonic.
- */
-export function calculateWorkflowProgress({ job, manifest, events = [], previous = 0 } = {}) {
-  if (TERMINAL.has(job?.status)) {
-    return {
-      percent: 100,
-      stage: job.status,
-      label: job.status === "completed" ? "归因报告已生成" : job.status === "completed_with_evidence_gaps" ? "归因完成，Trace局部不完整" : job.status === "completed_with_failures" ? "归因完成，部分GT失败" : job.status === "completed_no_action" ? "没有需要归因的GT" : job.status === "cancelled" ? "任务已取消" : "任务失败",
-    };
-  }
-  if (job?.status !== "running" || !manifest) return job?.progress;
-
-  const items = Array.isArray(manifest.items) ? manifest.items : [];
-  const terminalItems = items.filter((item) => ["completed", "completed_with_evidence_gaps", "failed", "skipped", "source_run_failed"].includes(item.status)).length;
-  const discovered = Number(manifest.counts?.criteria) || items.length;
-  const planned = Number(manifest.counts?.totalWorkUnits) || Number(manifest.counts?.plannedCriteria) || discovered;
-  const total = Math.max(1, planned, discovered, terminalItems);
-  const activeItems = items.filter((item) => item.status === "running");
-  const maxRounds = job.inputSummary?.maxRounds || manifest.configuration?.maxRounds || 20;
-  const activeFractions = activeItems.map((item) => {
-    const relevant = events.filter((event) =>
-      (!event.criterionId || event.criterionId === item.criterionId) &&
-      (!event.sessionId || event.sessionId === String(item.sessionId)),
-    );
-    const latest = relevant.at(-1);
-    return { item, latest, fraction: eventPhaseProgress(latest, maxRounds) };
-  });
-  const fraction = activeFractions.reduce((sum, entry) => sum + entry.fraction, 0);
-  const calculated = Math.round(RCA_PROGRESS_START + ((terminalItems + fraction) / total) * (RCA_PROGRESS_END - RCA_PROGRESS_START));
-  const percent = Math.min(RCA_PROGRESS_END, Math.max(RCA_PROGRESS_START, Number(previous) || 0, calculated));
-  const representative = activeFractions.reduce((best, entry) => !best || entry.fraction > best.fraction ? entry : best, null);
-  const activeItem = representative?.item;
-  const latest = representative?.latest;
-  const activeCriterion = activeItem?.criterionId ?? null;
-  const round = Number.parseInt(String(latest?.phase ?? "").match(/investigation_round_(\d+)/)?.[1] ?? "0", 10);
-  const criterionLabel = activeCriterion ? `${activeCriterion} · ` : "";
-  const parallelLabel = activeItems.length > 1 ? `${activeItems.length}个GT并行 · ` : criterionLabel;
-  let stage = "preparation";
-  let label = planned > 0 ? `准备归因 · ${terminalItems}/${total}项完成` : "准备归因";
-  if (latest?.phase === "scoring_gap") { stage = "gap"; label = `${parallelLabel}定义评分差距`; }
-  else if (latest?.phase === "trace_map") { stage = "trace_map"; label = `${parallelLabel}构建执行地图`; }
-  else if (round > 0) { stage = "investigation"; label = `${parallelLabel}Trace证据调查 · ${terminalItems}/${total}项完成`; }
-  else if (latest?.phase === "final_rca") { stage = "report"; label = `${parallelLabel}生成并校验报告`; }
-  return { percent, stage, label };
-}
-
-function artifactLabel(name, criterionId) {
-  const friendly = {
-    "rca-report.md": "RCA报告",
-    "failure-summary.md": "失败摘要",
-    "agent-run-summary.md": "执行摘要",
-    "agent-run.md": "Agent日志",
-    "validation.json": "校验结果",
-    "workflow-summary.md": "工作流摘要",
-    [WEB_JOB_LOG]: "Web运行日志",
-    [WEB_FAILURE_JSON]: "Web失败诊断数据",
-    [WEB_FAILURE_MD]: "Web失败诊断",
-  }[name] ?? name;
-  return criterionId ? `${criterionId} · ${friendly}` : friendly;
-}
-
-function aggregateStatus(items) {
-  if (items.some((item) => item.status === "running")) return "running";
-  if (items.some((item) => item.status === "failed")) {
-    return items.some((item) => ["completed", "completed_with_evidence_gaps"].includes(item.status)) ? "completed_with_failures" : "failed";
-  }
-  if (items.some((item) => item.status === "completed_with_evidence_gaps")) return "completed_with_evidence_gaps";
-  if (items.some((item) => item.status === "completed")) return "completed";
-  if (items.some((item) => item.status === "queued")) return "queued";
-  if (items.length && items.every((item) => item.status === "source_run_failed")) return "source_run_failed";
-  return items.length ? "skipped" : "completed_no_action";
-}
-
-function artifactBelongsToItem(artifact, item, jobDir) {
-  if (item.rcaOutputDir) {
-    const relative = path.relative(jobDir, path.resolve(item.rcaOutputDir));
-    if (relative && !relative.startsWith("..") && (artifact.path === relative || artifact.path.startsWith(`${relative}${path.sep}`))) return true;
-  }
-  if (item.casePath) {
-    const relativeCase = path.relative(jobDir, path.resolve(item.casePath));
-    if (artifact.path === relativeCase) return true;
-  }
-  return Boolean(
-    item.criterionId && artifact.criterionId === item.criterionId &&
-    item.sessionId && artifact.sessionId === String(item.sessionId),
-  );
-}
-
-export function buildReportTree({ job, manifest, artifacts }) {
-  const items = Array.isArray(manifest?.items) ? manifest.items : [];
-  const sessions = new Map();
-  const ensureSession = (sessionId, rowNumber) => {
-    const normalizedId = String(sessionId ?? "").trim();
-    const sessionKey = normalizedId || `row-${rowNumber ?? "unknown"}`;
-    if (!sessions.has(sessionKey)) {
-      sessions.set(sessionKey, {
-        key: sessionKey,
-        sessionId: normalizedId || null,
-        rowNumbers: new Set(),
-        items: [],
-        criteria: [],
-      });
-    }
-    const session = sessions.get(sessionKey);
-    if (rowNumber !== undefined && rowNumber !== null) session.rowNumbers.add(Number(rowNumber));
-    return session;
-  };
-  const preferredArtifact = (itemArtifacts) => itemArtifacts.find((artifact) => artifact.name === "rca-report.md")
-    ?? itemArtifacts.find((artifact) => artifact.name === "failure-summary.md")
-    ?? itemArtifacts.find((artifact) => artifact.name === "agent-run-summary.md")
-    ?? itemArtifacts.find((artifact) => artifact.name === "agent-run.md")
-    ?? itemArtifacts[0]
-    ?? null;
-
-  const plannedRecords = manifest?.executionPlan?.records ?? [];
-  for (const planned of plannedRecords) {
-    const session = ensureSession(planned.sessionId, planned.rowNumber);
-    session.items.push({
-      rowNumber: planned.rowNumber,
-      sessionId: planned.sessionId,
-      status: planned.initialStatus === "source_run_failed" ? "source_run_failed" : "queued",
-      stage: "planned",
-      reason: planned.initialStatus === "source_run_failed" ? "source_run_failed" : "awaiting_execution",
-      planned: true,
-    });
-  }
-
-  for (const item of items) {
-    // Full-score rows are intentionally not RCA work and must not appear as
-    // Sessions in the batch report workspace. Keep them only in batch counts.
-    if (item.reason === "full_score" || item.stage === "score_filter") continue;
-    const session = ensureSession(item.sessionId, item.rowNumber);
-    session.items = session.items.filter((planned) => !(planned.planned && Number(planned.rowNumber) === Number(item.rowNumber)));
-    session.items.push(item);
-    if (!item.criterionId) continue;
-    const itemArtifacts = artifacts.filter((artifact) => artifactBelongsToItem(artifact, item, job.jobDir));
-    session.criteria.push({
-      key: `${item.rowNumber ?? "single"}:${item.criterionId}:${item.caseId ?? "case"}`,
-      criterionId: item.criterionId,
-      caseId: item.caseId ?? null,
-      rowNumber: item.rowNumber ?? null,
-      status: item.status,
-      stage: item.stage ?? null,
-      error: item.error?.message ?? null,
-      errorCode: item.error?.code ?? null,
-      remediation: item.error?.remediation ?? null,
-      artifacts: itemArtifacts,
-      preferredArtifact: preferredArtifact(itemArtifacts),
-    });
-  }
-
-  // Compatibility projection for v1 runs: older workflows stored Session/GT only
-  // in the RCA directory name and sometimes had no workflow Manifest at all.
-  // Reconstruct missing nodes from artifact metadata without mutating old runs.
-  const legacyGroups = new Map();
-  for (const artifact of artifacts) {
-    if (!artifact.sessionId || !artifact.criterionId) continue;
-    const key = `${artifact.sessionId}\u0000${artifact.criterionId}`;
-    if (!legacyGroups.has(key)) legacyGroups.set(key, { sessionId: artifact.sessionId, criterionId: artifact.criterionId, artifacts: [] });
-    legacyGroups.get(key).artifacts.push(artifact);
-  }
-  for (const group of legacyGroups.values()) {
-    const session = ensureSession(group.sessionId, null);
-    const existing = session.criteria.find((criterion) => criterion.criterionId === group.criterionId);
-    if (existing) {
-      const known = new Set(existing.artifacts.map((artifact) => artifact.path));
-      existing.artifacts.push(...group.artifacts.filter((artifact) => !known.has(artifact.path)));
-      existing.preferredArtifact = preferredArtifact(existing.artifacts);
-      continue;
-    }
-    const hasReport = group.artifacts.some((artifact) => artifact.name === "rca-report.md");
-    const hasFailure = group.artifacts.some((artifact) => artifact.name === "failure-summary.md");
-    session.criteria.push({
-      key: `legacy:${group.sessionId}:${group.criterionId}`,
-      criterionId: group.criterionId,
-      caseId: null,
-      rowNumber: null,
-      status: hasFailure ? "failed" : hasReport ? "completed" : TERMINAL.has(job.status) ? "completed" : "running",
-      stage: "legacy_artifact_projection",
-      error: null,
-      artifacts: group.artifacts,
-      preferredArtifact: preferredArtifact(group.artifacts),
-    });
-  }
-
-  const sessionList = [...sessions.values()].map((session) => {
-    const plannedItems = session.items.filter((item) => item.planned);
-    const nonCriterionItems = session.items.filter((item) => !item.planned && !item.criterionId);
-    const statusItems = [...session.criteria, ...plannedItems, ...nonCriterionItems];
-    const sourceIssue = session.items.find((item) => item.status === "source_run_failed");
-    const sessionFailure = nonCriterionItems.find((item) => item.status === "failed");
-    const issue = sourceIssue ? {
-      kind: "source_run_failed",
-      status: sourceIssue.status,
-      stage: sourceIssue.stage ?? "source_run",
-      code: sourceIssue.code ?? "SOURCE_RUN_FAILED",
-      label: sourceIssue.label ?? "上游评测无有效产物",
-      detail: sourceIssue.detail ?? "上游任务没有产生可用于Trace归因的结果。",
-      remediation: sourceIssue.remediation ?? "请先重新运行上游IDA评测，补齐Session ID、score、IDA答案和机评结果。",
-      rowNumber: sourceIssue.rowNumber ?? null,
-    } : sessionFailure ? {
-      kind: "failure",
-      status: sessionFailure.status,
-      stage: sessionFailure.stage ?? "unknown",
-      code: sessionFailure.error?.code ?? null,
-      label: "Session处理失败",
-      detail: sessionFailure.error?.message ?? "该Session未能完成Trace归因。",
-      remediation: sessionFailure.error?.remediation ?? "查看失败阶段和错误信息，修复后仅重跑该Session。",
-      rowNumber: sessionFailure.rowNumber ?? null,
-    } : null;
-    return {
-      key: session.key,
-      sessionId: session.sessionId,
-      rowNumbers: [...session.rowNumbers].sort((left, right) => left - right),
-      status: aggregateStatus(statusItems),
-      counts: {
-        total: session.criteria.length || session.items.length,
-        criteria: session.criteria.length,
-        completed: statusItems.filter((item) => ["completed", "completed_with_evidence_gaps"].includes(item.status)).length,
-        completedWithEvidenceGaps: statusItems.filter((item) => item.status === "completed_with_evidence_gaps").length,
-        failed: statusItems.filter((item) => item.status === "failed").length,
-        skipped: statusItems.filter((item) => item.status === "skipped").length,
-        sourceRunFailed: statusItems.filter((item) => item.status === "source_run_failed").length,
-        queued: statusItems.filter((item) => item.status === "queued").length,
-      },
-      issue,
-      criteria: session.criteria.sort((left, right) => String(left.criterionId).localeCompare(String(right.criterionId), "zh-CN", { numeric: true })),
-    };
-  }).sort((left, right) => String(left.sessionId ?? left.key).localeCompare(String(right.sessionId ?? right.key), "zh-CN", { numeric: true }));
-  const assignedPaths = new Set(sessionList.flatMap((session) => session.criteria.flatMap((criterion) => criterion.artifacts.map((artifact) => artifact.path))));
-  const globalArtifacts = artifacts.filter((artifact) => !assignedPaths.has(artifact.path) && [
-    "workflow-summary.md", WEB_FAILURE_MD, WEB_FAILURE_JSON, WEB_JOB_LOG,
-  ].includes(artifact.name));
-  const actualRows = new Set(items
-    .filter((item) => item.reason !== "full_score" && item.stage !== "score_filter")
-    .map((item) => Number(item.rowNumber))
-    .filter(Number.isFinite));
-  return {
-    schemaVersion: "trace-rca-report-tree-v1",
-    batch: {
-      id: manifest?.workflowId ?? job.id,
-      jobId: job.id,
-      createdAt: manifest?.startedAt ?? job.createdAt,
-      status: manifest?.status ?? job.status,
-      source: manifest?.source ?? null,
-      attempt: Number(job.lineage?.attempt) || 1,
-      storageLayout: manifest?.storageLayout ?? { version: 1, hierarchy: "legacy" },
-    },
-    counts: {
-      sessions: sessionList.length,
-      criteria: sessionList.reduce((total, session) => total + session.criteria.length, 0),
-      completed: sessionList.reduce((total, session) => total + session.counts.completed, 0),
-      failed: sessionList.reduce((total, session) => total + session.counts.failed, 0),
-      skipped: sessionList.reduce((total, session) => total + session.counts.skipped, 0),
-      sourceRunFailed: sessionList.reduce((total, session) => total + session.counts.sourceRunFailed, 0),
-      queued: sessionList.reduce((total, session) => total + session.counts.queued, 0),
-      nonFullScoreRows: Number(manifest?.executionPlan?.nonFullScoreRows) || sessionList.length,
-      startedRows: actualRows.size,
-    },
-    sessions: sessionList,
-    globalArtifacts,
-  };
-}
-
-function logicalItemKey(item) {
-  return JSON.stringify([item?.rowNumber ?? null, String(item?.sessionId ?? ""), item?.criterionId ?? null]);
-}
-
-function effectiveAttemptItems(attempts) {
-  const effective = new Map();
-  for (const attempt of [...attempts].sort((a, b) => a.attempt - b.attempt)) {
-    if (attempt.scope === "full") effective.clear();
-    for (const item of attempt.manifest?.items ?? []) {
-      const sameRow = (candidate) => Number(candidate?.rowNumber ?? -1) === Number(item?.rowNumber ?? -1) && String(candidate?.sessionId ?? "") === String(item?.sessionId ?? "");
-      if (item.criterionId) {
-        for (const [key, previous] of effective) if (sameRow(previous) && !previous.criterionId) effective.delete(key);
-      } else {
-        for (const [key, previous] of effective) if (sameRow(previous)) effective.delete(key);
-      }
-      effective.set(logicalItemKey(item), { ...item, attempt: attempt.attempt, jobId: attempt.id });
-    }
-  }
-  return [...effective.values()];
-}
-
-function summarizeEffectiveItems(attempts) {
-  const items = effectiveAttemptItems(attempts);
-  return {
-    total: items.length,
-    completed: items.filter((item) => ["completed", "completed_with_evidence_gaps"].includes(item.status)).length,
-    completedWithEvidenceGaps: items.filter((item) => item.status === "completed_with_evidence_gaps").length,
-    failed: items.filter((item) => item.status === "failed").length,
-    skipped: items.filter((item) => item.status === "skipped").length,
-    sourceRunFailed: items.filter((item) => item.status === "source_run_failed").length,
-    running: items.filter((item) => item.status === "running").length,
-  };
-}
 
 function now() {
   return new Date().toISOString();
@@ -421,7 +95,7 @@ export class WebJobStore {
       if (!entry.isDirectory()) continue;
       const job = await readJson(path.join(this.outputRoot, "jobs", entry.name, JOB_FILE));
       if (!job) continue;
-      if (!TERMINAL.has(job.status)) {
+      if (!TERMINAL_JOB_STATUSES.has(job.status)) {
         job.status = "failed";
         job.error = "Web进程已重启，原任务进程状态不可恢复；RCA Checkpoint如存在仍可通过CLI恢复。";
         job.failureContext = {
@@ -689,9 +363,14 @@ export class WebJobStore {
   async createRetry(parentId, payload = {}) {
     const parent = this.jobs.get(parentId);
     if (!parent) return null;
-    if (!TERMINAL.has(parent.status)) throw new Error("运行中的任务不能复跑，请先等待结束或停止任务");
+    if (!TERMINAL_JOB_STATUSES.has(parent.status)) throw new Error("运行中的任务不能复跑，请先等待结束或停止任务");
     const scope = payload.scope || "failed_only";
-    if (!new Set(["failed_only", "full"]).has(scope)) throw new Error("复跑范围必须是failed_only或full");
+    if (!new Set(["failed_only", "selected_sessions", "full"]).has(scope)) {
+      throw new Error("复跑范围必须是failed_only、selected_sessions或full");
+    }
+    if (scope === "selected_sessions" && parent.type !== "csv") {
+      throw new Error("指定Session复跑只适用于CSV批次");
+    }
     const { maxRounds, mode } = this.validateCommon({
       maxRounds: payload.maxRounds ?? parent.inputSummary?.maxRounds ?? 20,
       mode: payload.mode ?? parent.inputSummary?.mode ?? "live",
@@ -734,6 +413,19 @@ export class WebJobStore {
     if (scope === "failed_only" && !failures.length) throw new Error("请至少选择一个失败项");
     if (scope === "failed_only" && selectedKeys && failures.length !== selectedKeys.size) throw new Error("复跑选择包含无效或过期的失败项");
 
+    const sessionCandidates = selectableSessionCandidates(manifest);
+    const sessionCandidateByKey = new Map(sessionCandidates.map((item) => [item.retryKey, item]));
+    const selectedSessionKeys = scope === "selected_sessions" && Array.isArray(payload.selectedSessionKeys)
+      ? new Set(payload.selectedSessionKeys.map(String))
+      : null;
+    if (scope === "selected_sessions" && !selectedSessionKeys?.size) throw new Error("请至少选择一个Session");
+    const selectedSessions = scope === "selected_sessions"
+      ? [...selectedSessionKeys].map((key) => sessionCandidateByKey.get(key)).filter(Boolean)
+      : [];
+    if (scope === "selected_sessions" && selectedSessions.length !== selectedSessionKeys.size) {
+      throw new Error("Session复跑选择包含无效或过期项，请刷新批次后重新选择");
+    }
+
     const rootJobId = parent.lineage?.rootJobId || parent.id;
     const attempt = this.reserveRetryAttempt(rootJobId);
     const id = `job-${Date.now()}-${randomUUID().slice(0, 8)}`;
@@ -754,7 +446,24 @@ export class WebJobStore {
       sourceManifestPath: parent.manifestPath,
       sourceStatus: parent.status,
     };
-    const retrySelection = scope === "failed_only" ? failures : undefined;
+    const retrySelection = scope === "failed_only"
+      ? failures
+      : scope === "selected_sessions"
+        ? selectedSessions.flatMap((session) => session.rowNumbers.length
+          ? session.rowNumbers.map((rowNumber) => ({
+              rowNumber,
+              sessionId: session.sessionId,
+              selectionSource: "selected_session",
+              previousJobId: parent.id,
+              previousAttempt: Number(parent.lineage?.attempt) || 1,
+            }))
+          : [{
+              sessionId: session.sessionId,
+              selectionSource: "selected_session",
+              previousJobId: parent.id,
+              previousAttempt: Number(parent.lineage?.attempt) || 1,
+            }])
+        : undefined;
     const runtime = await runtimeSnapshot(this.projectRoot, this.env);
     await writeJsonAtomic(planPath, {
       schemaVersion: "trace-rca-retry-plan-v1",
@@ -804,8 +513,15 @@ export class WebJobStore {
         forceIngestion: false,
         retryScope: scope,
         retryItemCount: retrySelection?.length ?? null,
+        retrySessionCount: scope === "selected_sessions" ? selectedSessions.length : null,
       },
-      progress: { percent: 2, stage: "queued", label: scope === "failed_only" ? `等待复跑${failures.length}个失败项` : "等待完整重跑" },
+      progress: {
+        percent: 2,
+        stage: "queued",
+        label: scope === "failed_only"
+          ? `等待复跑${failures.length}个失败项`
+          : scope === "selected_sessions" ? `等待复跑${selectedSessions.length}个Session` : "等待完整重跑",
+      },
       stdout: [],
       stderr: [],
       commandArgs: args,
@@ -815,7 +531,8 @@ export class WebJobStore {
       type: job.type,
       lineage,
       input: job.inputSummary,
-      selectedFailureCount: retrySelection?.length ?? null,
+      selectedFailureCount: scope === "failed_only" ? retrySelection?.length ?? null : null,
+      selectedSessionCount: scope === "selected_sessions" ? selectedSessions.length : null,
       retryPlan: path.relative(job.jobDir, planPath),
     });
     this.start(job);
@@ -905,9 +622,9 @@ export class WebJobStore {
         await this.ensureFailureDiagnostics(job, manifest, { force: true });
       }
       job.progress = {
-        percent: TERMINAL.has(job.status) ? 100 : job.progress.percent,
+        percent: TERMINAL_JOB_STATUSES.has(job.status) ? 100 : job.progress.percent,
         stage: job.status,
-        label: job.status === "completed" ? "归因报告已生成" : job.status === "cancelled" ? "任务已取消" : job.status,
+        label: job.status === "completed" ? "归因报告已生成" : job.status === "completed_with_evidence_gaps" ? "归因完成，Trace局部不完整" : job.status === "cancelled" ? "任务已取消" : job.status,
       };
       await this.audit.job(job, "process_exited", {
         exitCode: code,
@@ -1018,8 +735,10 @@ export class WebJobStore {
     return {
       ...publicJob(job), manifest, artifacts, reportTree, events: events.slice(-160), webEvents: webEvents.slice(-80), relatedJobs, chainSummary,
       retry: {
-        canRetryFull: TERMINAL.has(job.status),
-        canRetryFailed: TERMINAL.has(job.status) && failedItems.length > 0 && !(job.type === "csv" && job.inputSummary?.failFast) && !baselineIncomplete,
+        canRetryFull: TERMINAL_JOB_STATUSES.has(job.status),
+        canRetryFailed: TERMINAL_JOB_STATUSES.has(job.status) && failedItems.length > 0 && !(job.type === "csv" && job.inputSummary?.failFast) && !baselineIncomplete,
+        canRetrySelectedSessions: TERMINAL_JOB_STATUSES.has(job.status) && job.type === "csv" && selectableSessionCandidates(manifest).length > 0,
+        selectableSessions: selectableSessionCandidates(manifest),
         failedItems,
       },
     };
@@ -1037,7 +756,7 @@ export class WebJobStore {
   async cancel(id) {
     const job = this.jobs.get(id);
     if (!job) return null;
-    if (TERMINAL.has(job.status)) return publicJob(job);
+    if (TERMINAL_JOB_STATUSES.has(job.status)) return publicJob(job);
     job.status = "cancelled";
     job.progress = { ...job.progress, stage: "cancelled", label: "正在停止任务" };
     const child = this.processes.get(id);

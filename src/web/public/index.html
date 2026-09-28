@@ -164,10 +164,14 @@
           <div><p class="kicker">THIS BATCH ONLY</p><h2>本批次 Session</h2><p id="batch-session-summary"></p></div>
           <div class="batch-session-tools">
             <label class="search-box compact"><svg><use href="#i-search"/></svg><span class="sr-only">搜索本批次 Session</span><input id="batch-session-search" placeholder="搜索 Session ID 或 CSV 行"></label>
-            <select id="batch-session-status" aria-label="筛选 Session 状态"><option value="all">全部状态</option><option value="queued">等待处理</option><option value="running">运行中</option><option value="completed">已完成</option><option value="failed">失败</option><option value="skipped">已跳过</option><option value="source_run_failed">源任务未运行</option></select>
+            <select id="batch-session-status" aria-label="筛选 Session 状态"><option value="all">全部状态</option><option value="queued">等待处理</option><option value="running">运行中</option><option value="completed">已完成</option><option value="completed_with_evidence_gaps">Trace有缺口</option><option value="failed">失败</option><option value="skipped">已跳过</option><option value="source_run_failed">源任务未运行</option></select>
           </div>
         </header>
         <div id="batch-session-stats" class="batch-session-stats"></div>
+        <div id="batch-session-selection" class="batch-session-selection" hidden>
+          <div><strong id="batch-selection-count" role="status" aria-live="polite" aria-atomic="true">已选择 0 个 Session</strong><small>将创建新的 Attempt，并重跑所选 Session 对应 CSV 行中的全部未命中 GT。</small></div>
+          <div class="batch-selection-actions"><button type="button" class="button ghost compact-button" id="batch-select-visible">选择当前筛选结果</button><button type="button" class="button ghost compact-button" id="batch-clear-selection">清空</button><button type="button" class="button retry-primary compact-button" id="batch-retry-selected" disabled><svg><use href="#i-retry"/></svg>重跑所选 Session</button></div>
+        </div>
         <div id="batch-session-grid" class="batch-session-grid"></div>
       </section>
       <div class="report-workspace">

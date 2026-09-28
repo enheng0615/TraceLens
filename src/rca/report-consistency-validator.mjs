@@ -128,23 +128,25 @@ export function validateReportEvidenceConsistency(report, ledger) {
     }
   }
 
-  let usedPartialNegativeEvidence = false;
-  for (const entry of ledger.entries.filter((item) =>
+  const partialSearches = ledger.entries.filter((item) =>
     item.tool === "search_trace" &&
-    item.result?.totalMatches === 0 &&
-    item.result?.coverage?.negativeEvidenceEligible === false &&
-    isMeaningfulQuery(item.arguments?.query)
-  )) {
+    item.result?.coverage?.negativeEvidenceEligible === false
+  );
+  for (const clause of reportTextClauses) {
+    if (partialSearches.length && claimsWholeTrace(clause) && saysAbsence(clause) && !qualifiesVisibleScope(clause)) {
+      errors.push(`Trace has unknown Tool output segments; whole-Trace absence is not provable: ${clause}`);
+    }
+  }
+  for (const entry of partialSearches.filter((item) => item.result?.totalMatches === 0 && isMeaningfulQuery(item.arguments?.query))) {
     const query = String(entry.arguments.query);
     for (const clause of reportTextClauses.filter((item) => queryMentionedExactly(item, query))) {
       if (!saysAbsence(clause)) continue;
-      usedPartialNegativeEvidence = true;
       if (claimsWholeTrace(clause) || !qualifiesVisibleScope(clause)) {
         errors.push(`${entry.evidenceId} cannot support a whole-Trace absence claim because unknown Tool output segments remain: ${clause}`);
       }
     }
   }
-  if (usedPartialNegativeEvidence && !/(未知|截断|缺口|不可见|不完整)/.test(String(report?.evidenceBoundary?.notProven ?? ""))) {
+  if (partialSearches.length && !/(未知|截断|缺口|不可见|不完整)/.test(String(report?.evidenceBoundary?.notProven ?? ""))) {
     errors.push("partial Trace negative evidence requires evidenceBoundary.notProven to name the unknown or truncated segment");
   }
 

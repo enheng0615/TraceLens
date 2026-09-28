@@ -101,16 +101,24 @@ export function validateScoringGapTarget(target, caseData) {
   const criterion = caseData.officialMissedCriteria[0];
   if (target?.criterion?.text !== criterion.text) errors.push("criterion.text must exactly equal the official missed criterion");
   if (target?.criterion?.officialVerdict !== criterion.officialVerdict) errors.push("official verdict changed");
+  const isValidatorNormalized = target?.sourceAttribution?.phenomenonToExplain?.sourceType === "system_generated_investigation_contract";
   walk(target, (value, path) => {
     const key = path.at(-1);
     if (FORBIDDEN_KEYS.has(key)) errors.push(`forbidden pre-Trace causal field: ${path.join(".")}`);
     if (
-      !isGroundedSourcePath(path) && typeof value === "string" &&
+      !isValidatorNormalized && !isGroundedSourcePath(path) && typeof value === "string" &&
       PRE_TRACE_ROOT_CAUSE_TERMS.some((term) => value.toLocaleLowerCase().includes(term.toLocaleLowerCase()))
     ) errors.push(`pre-Trace generated text contains root-cause hypothesis: ${path.join(".")}`);
   });
 
-  const sourceRegistry = [];
+  const sourceRegistry = [sourceRecord({
+    id: "SRC-GT-CRITERION",
+    sourceType: "ground_truth_quote",
+    document: "official_missed_criterion",
+    text: criterion.text,
+    startOffset: 0,
+    endOffset: criterion.text.length,
+  })];
   const normalizedElements = [];
   for (const [index, element] of (target?.requiredState?.elements ?? []).entries()) {
     const excerpt = element?.source?.excerpt;
@@ -154,14 +162,23 @@ export function validateScoringGapTarget(target, caseData) {
   const answerText = resolvedExcerpts.map((item) => item.quote);
   const normalizedTarget = {
     ...target,
-    criterion: { id: String(criterion.id ?? target?.criterion?.id ?? "GT-1"), text: criterion.text, officialVerdict: criterion.officialVerdict, officialGraderReason: graderText, sourceRefs: graderText ? ["SRC-GRADER-001"] : [] },
+    criterion: {
+      id: String(criterion.id ?? target?.criterion?.id ?? "GT-1"),
+      text: criterion.text,
+      officialVerdict: criterion.officialVerdict,
+      officialGraderReason: graderText,
+      sourceRefs: ["SRC-GT-CRITERION"],
+      officialGraderReasonSourceRefs: graderText ? ["SRC-GRADER-001"] : [],
+    },
     requiredState: { summary: `官方未命中项要求呈现：${criterion.text}`, elements: normalizedElements, sourceRefs: requiredRefs },
     answerState: { summary: answerText.length ? `IDA最终答案中与该评分项相关的原文共${answerText.length}处。` : "IDA最终答案中未定位到与该评分项直接相关的原文。", relevantExcerpts: resolvedExcerpts, sourceRefs: answerRefs },
     difference: { summary: "官方未命中项要求与IDA最终答案中已定位的相关原文存在差距。", requiredButNotPresent: requiredText.length ? requiredText : [criterion.text], presentAndRelevant: answerText, sourceRefs: [...requiredRefs, ...answerRefs], sourceType: "system_derived_gap" },
     phenomenonToExplain: `调查官方未命中项“${criterion.text}”在IDA运行轨迹中的信息生命周期，并重建最终答案已出现事实的生成链。`,
     sourceRegistry,
     sourceAttribution: {
-      criterion: graderText ? ["SRC-GRADER-001"] : [], requiredState: requiredRefs, answerState: answerRefs,
+      criterion: ["SRC-GT-CRITERION"],
+      officialGraderReason: graderText ? ["SRC-GRADER-001"] : [],
+      requiredState: requiredRefs, answerState: answerRefs,
       difference: { sourceType: "system_derived_gap", sourceRefs: [...requiredRefs, ...answerRefs] },
       phenomenonToExplain: { sourceType: "system_generated_investigation_contract", sourceRefs: [...requiredRefs, ...answerRefs] },
     },

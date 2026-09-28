@@ -34,7 +34,12 @@ export function workingState({ decisions = [], coverage, stallCount = 0, actionA
 }
 
 export function updateStallCount({ previousEvidenceCount, evidenceCount, previousCoverageSignature, coverage, stallCount = 0 }) {
-  const progressed = evidenceCount > previousEvidenceCount || coverageSignature(coverage) !== previousCoverageSignature;
+  // New EV rows alone are not progress: an agent can otherwise keep issuing
+  // novel but irrelevant searches forever. Progress means the deterministic
+  // coverage state changed. Evidence counts remain in the signature for audit
+  // compatibility but deliberately do not reset the stall counter.
+  void previousEvidenceCount;
+  void evidenceCount;
+  const progressed = coverageSignature(coverage) !== previousCoverageSignature;
   return { progressed, stallCount: progressed ? 0 : stallCount + 1 };
 }
-

@@ -81,7 +81,7 @@ Web 的“报告”页是这个物理目录的展示投影：先选批次，再�
 }
 ```
 
-## 3. 两种 Web 复跑方式
+## 3. 三种 Web 复跑方式
 
 ### 仅重跑失败项（默认、推荐）
 
@@ -106,6 +106,18 @@ Web 的“报告”页是这个物理目录的展示投影：先选批次，再�
 - 默认仍复用通过完整性校验的 Trace；
 - 产生新的完整 Workflow；
 - 运行链汇总以这次完整重跑为新的结果基线。
+
+### 指定 Session 重跑
+
+适用：人工检查批次结果后，希望重新分析一个或多个明确指定的 Session，不限原状态是成功、失败还是“完成但Trace有缺口”。
+
+- 在批次 Session 卡片上勾选一个或多个 Session；
+- 选择身份由 `sessionId + 该Session对应CSV行号集合` 生成稳定摘要，不接受浏览器直接提交任意行号；
+- 后端根据父 Attempt 的 Manifest 重新解析选择，过期或伪造的选择会被拒绝；
+- 同一 Session 对应多行 CSV 时，勾选一次会包含这些行；
+- 每个所选 CSV 行中的全部未命中 GT 都会重跑，而不是只重跑原失败 GT；
+- 创建独立 `selected_sessions` Attempt，旧报告、失败日志和原始批次均保持不变；
+- Trace 默认复用已通过可分析性检查的 Session 缓存，不自动执行 `force-ingestion`。
 
 ## 4. Retry 与 Resume
 
@@ -163,4 +175,4 @@ Trace 中若出现 `isResultTruncated=true` 且包含可信的 `fullResultDownlo
 4. 在 Manifest 中只保存来源哈希，不保存原始下载 URL；
 5. 重新进行完整性审计，并让 Trace Repository 优先索引补拉内容。
 
-完整性分为 `complete`、`complete_with_recovered_truncation`、`partial_recoverable` 和 `partial_unrecoverable`。只有前两种允许进入 RCA；补拉网络失败会保留为可恢复失败，无法补回的结构缺口继续严格阻断。
+采集完整性会进一步投影为 RCA 证据边界：`complete`、`partial_analyzable` 和 `partial_critical`。主体结构完整但局部 Tool Result 补拉失败时可按 `partial_analyzable` 继续分析，报告必须标出具体 Tool/Span/字段及未知区间；分页、数量、Tree 或 Payload 等结构性缺口仍按 `partial_critical` 严格阻断。

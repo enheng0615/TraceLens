@@ -91,6 +91,8 @@ test("workflow progress is monotonic and terminal states are exactly 100 percent
   assert.equal(running.percent, 80);
   const failed = calculateWorkflowProgress({ job: { status: "failed" }, previous: 80 });
   assert.deepEqual(failed, { percent: 100, stage: "failed", label: "任务失败" });
+  const partial = calculateWorkflowProgress({ job: { status: "completed_with_evidence_gaps" }, previous: 80 });
+  assert.deepEqual(partial, { percent: 100, stage: "completed_with_evidence_gaps", label: "归因完成，Trace局部不完整" });
 });
 
 test("artifact metadata distinguishes reports from different GT criteria", async () => {
@@ -236,6 +238,80 @@ test("failed-only retry creates an immutable child attempt and copies the input 
   assert.equal(plan.policy.preserveParentArtifacts, true);
   assert.equal(parent.status, "completed_with_failures");
   assert.ok(!jobs.jobs.get(retry.id).commandArgs.includes("--force-ingestion"));
+});
+
+test("selected Session retry creates a new attempt for every CSV row of that Session", async () => {
+  const jobs = await store();
+  const parentId = "job-session-selection";
+  const parentDir = jobs.jobDirectory(parentId);
+  const inputPath = path.join(parentDir, "input", "batch.csv");
+  const workflowDir = path.join(parentDir, "workflows", "run-1");
+  const manifestPath = path.join(workflowDir, "workflow-manifest.json");
+  await mkdir(path.dirname(inputPath), { recursive: true });
+  await mkdir(workflowDir, { recursive: true });
+  await writeFile(inputPath, "header\nvalue\n", "utf8");
+  await writeFile(manifestPath, JSON.stringify({
+    status: "completed_with_failures",
+    executionPlan: { records: [
+      { rowNumber: 2, sessionId: "100", initialStatus: "queued" },
+      { rowNumber: 3, sessionId: "100", initialStatus: "queued" },
+      { rowNumber: 4, sessionId: "200", initialStatus: "queued" },
+      { rowNumber: 5, sessionId: "", initialStatus: "source_run_failed" },
+    ] },
+    items: [
+      { rowNumber: 2, sessionId: "100", criterionId: "报告GT1", status: "completed" },
+      { rowNumber: 3, sessionId: "100", criterionId: "报告GT2", status: "failed" },
+      { rowNumber: 4, sessionId: "200", criterionId: "报告GT1", status: "completed" },
+    ],
+  }), "utf8");
+  const parent = {
+    id: parentId, type: "csv", status: "completed_with_failures", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z",
+    jobDir: parentDir, workflowRoot: path.join(parentDir, "workflows"), workflowOutputDir: workflowDir, manifestPath, inputPath,
+    lineage: { rootJobId: parentId, attempt: 1, scope: "initial" },
+    inputSummary: { fileName: "batch.csv", maxRounds: 20, concurrency: 3, mode: "live", failFast: false }, progress: {}, stdout: [], stderr: [],
+  };
+  jobs.jobs.set(parentId, parent);
+  jobs.start = () => {};
+
+  const detail = await jobs.details(parentId);
+  assert.equal(detail.retry.canRetrySelectedSessions, true);
+  assert.equal(detail.retry.selectableSessions.length, 2);
+  const selected = detail.retry.selectableSessions.find((item) => item.sessionId === "100");
+  assert.deepEqual(selected.rowNumbers, [2, 3]);
+  assert.equal(detail.reportTree.sessions.find((item) => item.sessionId === "100").retryKey, selected.retryKey);
+
+  const retry = await jobs.createRetry(parentId, {
+    scope: "selected_sessions", selectedSessionKeys: [selected.retryKey], maxRounds: 25, reason: "指定复跑Session 100",
+  });
+  assert.equal(retry.lineage.scope, "selected_sessions");
+  assert.equal(retry.inputSummary.retrySessionCount, 1);
+  assert.equal(retry.inputSummary.retryItemCount, 2);
+  const plan = JSON.parse(await readFile(retry.retryPlanPath, "utf8"));
+  assert.deepEqual(plan.retrySelection.map((item) => [item.rowNumber, item.sessionId, item.criterionId]), [
+    [2, "100", undefined], [3, "100", undefined],
+  ]);
+  assert.ok(plan.retrySelection.every((item) => item.selectionSource === "selected_session"));
+  assert.equal(parent.status, "completed_with_failures");
+});
+
+test("selected Session retry rejects empty and stale selections", async () => {
+  const jobs = await store();
+  const id = "job-stale-session-selection";
+  const directory = jobs.jobDirectory(id);
+  const inputPath = path.join(directory, "input", "batch.csv");
+  const workflowDir = path.join(directory, "workflows", "run");
+  const manifestPath = path.join(workflowDir, "workflow-manifest.json");
+  await mkdir(path.dirname(inputPath), { recursive: true });
+  await mkdir(workflowDir, { recursive: true });
+  await writeFile(inputPath, "header\nvalue\n");
+  await writeFile(manifestPath, JSON.stringify({ executionPlan: { records: [{ rowNumber: 2, sessionId: "100", initialStatus: "queued" }] }, items: [] }));
+  jobs.jobs.set(id, {
+    id, type: "csv", status: "completed_no_action", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z",
+    jobDir: directory, workflowRoot: path.join(directory, "workflows"), workflowOutputDir: workflowDir, manifestPath, inputPath,
+    lineage: { rootJobId: id, attempt: 1, scope: "initial" }, inputSummary: { maxRounds: 20, concurrency: 1, mode: "live" }, progress: {}, stdout: [], stderr: [],
+  });
+  await assert.rejects(jobs.createRetry(id, { scope: "selected_sessions", selectedSessionKeys: [] }), /至少选择一个Session/);
+  await assert.rejects(jobs.createRetry(id, { scope: "selected_sessions", selectedSessionKeys: ["SR-stale"] }), /无效或过期/);
 });
 
 test("failed-only retry is blocked when the parent stopped before all planned criteria", async () => {

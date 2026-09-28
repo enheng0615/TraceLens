@@ -1,12 +1,26 @@
+# Dependencies and package-manager logs
 node_modules/
-.env
-.DS_Store
 npm-debug.log*
 
+# Local credentials. Keep the documented template tracked.
+.env
+.env.*
+!.env.example
+
+# Operating-system and editor files
+.DS_Store
+*.swp
+*.swo
+.idea/
+.vscode/
+
+# Sensitive or generated Trace data
 test_data/
-data/raw/
-outputs/rca-runs/
-
 data/input/
+data/raw/
+outputs/
 
-outputs/web-console/
+# Test coverage and temporary files
+coverage/
+.nyc_output/
+*.tmp

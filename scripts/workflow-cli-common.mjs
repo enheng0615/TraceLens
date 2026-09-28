@@ -87,12 +87,14 @@ export async function loadRetryPlan(args) {
     throw new Error(`Invalid retry plan: ${error.message}`);
   }
   const scope = plan?.lineage?.scope;
-  if (scope && !["failed_only", "full"].includes(scope)) throw new Error("Retry plan scope must be failed_only or full");
-  if (scope === "failed_only" && (!Array.isArray(plan.retrySelection) || !plan.retrySelection.length)) {
-    throw new Error("failed_only retry plan requires retrySelection");
+  if (scope && !["failed_only", "selected_sessions", "full"].includes(scope)) {
+    throw new Error("Retry plan scope must be failed_only, selected_sessions, or full");
+  }
+  if (["failed_only", "selected_sessions"].includes(scope) && (!Array.isArray(plan.retrySelection) || !plan.retrySelection.length)) {
+    throw new Error(`${scope} retry plan requires retrySelection`);
   }
   return {
-    retrySelection: scope === "failed_only" ? plan.retrySelection : undefined,
+    retrySelection: ["failed_only", "selected_sessions"].includes(scope) ? plan.retrySelection : undefined,
     lineage: plan.lineage,
   };
 }

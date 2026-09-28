@@ -50,7 +50,7 @@ TRACE_OUTPUT_ROOT=data/raw/sophon-sessions
 - Web 会生成 `web-failure-summary.md` 和 `web-failure-diagnosis.json`，优先展示失败阶段、输入行号、错误码、影响和处理建议；
 - 运行中任务可停止；
 - Web 服务重启后读取历史 Job；中断任务会标记失败，已存在的 RCA Checkpoint 仍可按失败摘要通过 CLI 恢复；
-- 失败任务支持“仅重跑失败项”和“完整重跑”，每次创建独立 Attempt，不覆盖历史日志；
+- 批次支持“仅重跑失败项”“指定 Session 重跑”和“完整重跑”，每次创建独立 Attempt，不覆盖历史日志；
 - 批次复跑可按 Session/GT 勾选失败项，并展示跨 Attempt 的有效结果汇总。
 
 ## 数据目录

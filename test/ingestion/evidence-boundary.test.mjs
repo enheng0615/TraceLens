@@ -47,3 +47,17 @@ test("pagination or count integrity gaps remain critical", async () => {
     assert.equal(boundary.analysisAllowed, false);
   });
 });
+
+test("an unresolved Tool gap overrides a contradictory complete flag", async () => {
+  await withTraceSpan(async (traceRoot) => {
+    const boundary = await buildTraceEvidenceBoundary({ traceRoot, integrity: {
+      complete: true,
+      completeness: "complete",
+      warnings: ["Unrecovered server-side truncation markers were detected"],
+      possibleTruncationSignals: [{ spanId: "span-cut", path: "$.data.output" }],
+      expandedToolResults: { unresolvedSpanIds: ["span-cut"], attempts: [] },
+    } });
+    assert.equal(boundary.classification, "partial_analyzable");
+    assert.equal(boundary.negativeEvidenceEligible, false);
+  });
+});
