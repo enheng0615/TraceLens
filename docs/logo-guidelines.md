@@ -1,46 +1,59 @@
-# Trace RCA Logo 使用说明
+# ORIGO Logo 使用规范
 
-## 设计含义
+## 品牌概念
 
-Logo 由三条带节点的 Trace 路径和一个根因定位点构成：
+**ORIGO** 来自拉丁语 *origo*，意为“起源、源点”。品牌承诺是：
 
-- 三条路径表示 Agent 运行中的模型推理、Tool 调用、Skill 执行和中间事实链；
-- 路径逐步收敛表示从大量 Trace 信息中缩小调查范围；
-- 末端圆环和中心点表示经证据校验后定位到的 Root Cause；
-- 圆角方形与现有 Web 界面的克制、简洁风格保持一致。
+> **From outcome to origin.**  
+> 从结果出发，回到问题真正发生的源点。
 
-## 资产
+Logo 名为 **Origin Orbit / 回溯轨道**：
+
+- 一条连续轨迹由外向内回溯，代表从最终结果逐层检查 Agent 的真实执行过程；
+- 紫色圆点是 Origin，代表被证据确认的最初故障源；
+- 整体轮廓形成字母 `O`，使符号与 ORIGO 名称直接绑定；
+- 轨迹不是封闭圆环，表示调查过程保留证据入口与可验证性；
+- 图形脱离文字和 App 底板仍可独立识别。
+
+## 正式资产
 
 | 文件 | 用途 |
 | --- | --- |
-| `src/web/public/assets/logo-mark.svg` | 浅色页面、导航栏和常规图标 |
-| `src/web/public/assets/logo-mark-dark.svg` | 深色页面或演示文稿 |
-| `src/web/public/assets/logo-horizontal.svg` | 浅色文档封面、README、宽版品牌区 |
-| `src/web/public/assets/logo-horizontal-dark.svg` | 深色演示文稿、深色品牌区 |
+| `src/web/public/assets/logo-mark.svg` | 浅色背景主标志 |
+| `src/web/public/assets/logo-mark-dark.svg` | 深色背景主标志 |
 | `src/web/public/assets/logo-mark-mono.svg` | 单色印刷、刻印和受限色彩场景 |
-| `src/web/public/assets/favicon.svg` | 浏览器标签页 |
+| `src/web/public/assets/logo-horizontal.svg` | README、文档封面、浅色宽版品牌区 |
+| `src/web/public/assets/logo-horizontal-dark.svg` | 深色演示文稿和深色宽版品牌区 |
+| `src/web/public/assets/favicon.svg` | 16–32 px 浏览器与应用小图标 |
+| `docs/logo-exports/origo-mark-1024.png` | 透明背景 1024 px PNG |
+| `docs/logo-exports/origo-horizontal-1320.png` | 透明背景横版 PNG |
+| `docs/logo-exports/origo-favicon-64.png` | 64 px PNG |
+
+旧版资产保留在：
+
+- `src/web/public/assets/legacy/v1/`
+- `src/web/public/assets/legacy/v2-trace-rca/`
 
 ## 色彩
 
-- Trace 蓝：`#0071E3`
-- 高亮蓝：`#2997FF`
-- 深蓝：`#0062C8`
-- 石墨黑：`#1D1D1F`
-- 暖白：`#F5F5F7`
+- Ink Black：`#10131A`
+- Origin Violet：`#665CFF`
+- Dark-mode Violet：`#8A82FF`
+- Soft White：`#F7F7F4`
+- Secondary Gray：`#6B6D76`
+
+## 字标
+
+- 主字标固定写作大写 `ORIGO`；
+- 字母间距是识别系统的一部分，不得压缩成普通粗体单词；
+- 推荐副标语：`FROM OUTCOME TO ORIGIN`；
+- 产品描述可写作：`Agent Trace Intelligence`，但不应并入 Logo 主锁定结构。
 
 ## 使用规则
 
-1. 图标最小显示尺寸为 `24 × 24 px`；低于该尺寸时优先使用 `favicon.svg`。
-2. Logo 四周至少保留图标宽度 `1/4` 的安全留白。
-3. 不拉伸、不旋转、不改变路径与根因点的相对位置。
-4. 浅色界面使用标准版；深色界面使用深色版。
-5. Logo 旁已有可见产品名时，图标作为装饰使用空 `alt`；独立出现时应提供 `Trace RCA` 文本替代。
-
-## 核心识别语义
-
-- **Trace**：左侧三条带节点的运行轨迹；
-- **RCA**：路径不是简单汇聚，而是在靶点外圈完成证据校验与定位；
-- **Agent**：多分支输入代表模型推理、工具调用、Skill 与中间事实链；
-- **可信度**：克制的几何语言强调“证据先于结论”，避免使用放大镜、机器人头等泛化图标。
-
-预览板：`docs/trace-rca-logo-preview.html`。
+1. 主标志最小尺寸为 `24 × 24 px`；低于 24 px 使用 `favicon.svg`。
+2. 四周安全留白至少为紫色 Origin 点直径的两倍。
+3. 不添加底板、投影、纹理、复杂渐变或额外轨道。
+4. 不旋转、拉伸或改变轨迹与 Origin 点的比例。
+5. 浅色背景使用标准版，深色背景使用深色版；单色场景使用 mono 版。
+6. 标志旁已有 `ORIGO` 文本时，图片使用空 `alt`；独立使用时提供 `ORIGO` 文本替代。

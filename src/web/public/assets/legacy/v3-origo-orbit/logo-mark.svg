@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title desc">
+  <title id="title">ORIGO Origin Orbit</title>
+  <desc id="desc">A continuous trace spirals inward and resolves at a violet origin point</desc>
+  <path d="M46 11C57 17 61 31 56 43C51 55 38 61 25 57C12 53 5 40 8 27C11 14 24 6 37 8C49 10 57 21 55 33C53 44 43 51 32 50C22 49 15 40 16 30C17 21 25 15 34 16C42 17 48 24 47 32C46 39 40 44 33 43C27 42 23 37 24 31C25 26 29 23 34 24" fill="none" stroke="#10131A" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="34" cy="32" r="4.5" fill="#665CFF"/>
+</svg>

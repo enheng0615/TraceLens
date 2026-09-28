@@ -1,25 +1,16 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 306 64" role="img" aria-labelledby="title desc">
-  <title id="title">Trace RCA</title>
-  <desc id="desc">多条 Agent 轨迹收敛至根因定位点</desc>
-  <defs>
-    <linearGradient id="surface" x1="8" y1="5" x2="56" y2="60" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#2997FF"/>
-      <stop offset="1" stop-color="#0062C8"/>
-    </linearGradient>
-  </defs>
-  <rect x="2" y="2" width="60" height="60" rx="16" fill="url(#surface)"/>
-  <g fill="none" stroke="#FFFFFF" stroke-linecap="round" stroke-linejoin="round" stroke-width="3.6">
-    <path d="M15 18h8.5c6.5 0 6 9.7 12.6 10.9"/>
-    <path d="M15 32h20.5"/>
-    <path d="M15 46h8.5c6.5 0 6-9.7 12.6-10.9"/>
-    <circle cx="43" cy="32" r="8.5"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 310 80" role="img" aria-labelledby="title desc">
+  <title id="title">ORIGO</title>
+  <desc id="desc">A geometric wordmark with a centered origin point inside the first O</desc>
+  <g fill="none" stroke="#0B0D12" stroke-width="9">
+    <circle cx="38" cy="41.5" r="24.5"/>
   </g>
-  <g fill="#FFFFFF">
-    <circle cx="15" cy="18" r="2.4"/>
-    <circle cx="15" cy="32" r="2.4"/>
-    <circle cx="15" cy="46" r="2.4"/>
-    <circle cx="43" cy="32" r="3.1"/>
+  <circle cx="38" cy="41.5" r="4" fill="#0B0D12"/>
+  <g fill="#0B0D12">
+    <path fill-rule="evenodd" d="M84 15h20c15 0 24 8 24 20 0 9-5 16-14 19l18 14h-15l-17-13h-7v13h-9V15Zm9 9v22h11c10 0 15-4 15-11s-5-11-15-11H93Z"/>
+    <path d="M148 15h9v53h-9z"/>
   </g>
-  <text x="79" y="29" fill="#1D1D1F" font-family="-apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif" font-size="24" font-weight="700" letter-spacing="-0.7">Trace RCA</text>
-  <text x="80" y="48" fill="#6E6E73" font-family="-apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif" font-size="11" font-weight="500" letter-spacing="0.15">Trace-based Root Cause Analysis</text>
+  <g fill="none" stroke="#0B0D12" stroke-width="9" stroke-linecap="square" stroke-linejoin="miter">
+    <path d="M221 24a25 25 0 1 0 0 36M201 43h24v20"/>
+    <circle cx="276" cy="41.5" r="24.5"/>
+  </g>
 </svg>

@@ -16,7 +16,7 @@ const state = {
   retryScope: null,
 };
 
-const titles = { workspace: "Trace RCA", "session-new": "单 Session 归因", "csv-new": "批量 CSV 归因", reports: "归因报告", history: "运行历史", detail: "报告详情", settings: "运行配置" };
+const titles = { workspace: "ORIGO", "session-new": "单 Session 归因", "csv-new": "批量 CSV 归因", reports: "归因报告", history: "运行历史", detail: "报告详情", settings: "运行配置" };
 const statusNames = {
   queued: "等待处理", running: "运行中", completed: "已完成", completed_with_evidence_gaps: "完成 · Trace局部不完整", completed_with_failures: "部分失败",
   completed_no_action: "无需归因", source_run_failed: "源任务未运行", failed: "失败", cancelled: "已取消",
@@ -70,7 +70,7 @@ async function api(path, options = {}) {
 function showView(name) {
   $$(".view").forEach((view) => view.classList.toggle("active", view.id === `${name}-view`));
   $$(".nav-link[data-view]").forEach((item) => item.classList.toggle("active", item.dataset.view === name));
-  document.title = `${titles[name] || "Trace RCA"} - Trace RCA`;
+  document.title = `${titles[name] || "ORIGO"} - ORIGO`;
   window.scrollTo({ top: 0, behavior: "instant" });
   if (name !== "detail") {
     state.activeJobId = null;
@@ -485,7 +485,7 @@ function renderSessionState(session) {
     return [];
   }
   $("#report-context").innerHTML = `<nav class="breadcrumbs" aria-label="当前位置"><span>${escapeHtml(sessionLabel(session))}</span><svg><use href="#i-chevron"/></svg><strong>${escapeHtml(row)}</strong></nav><div class="report-context-title"><div><p class="kicker">SESSION STATUS · ${escapeHtml(row)}</p><h2>等待处理</h2></div>${statusBadge(session?.status || "queued")}</div>`;
-  $("#artifact-tabs").innerHTML = `<span class="progress-label">尚未进入 Trace RCA</span>`;
+  $("#artifact-tabs").innerHTML = `<span class="progress-label">尚未进入 ORIGO 分析</span>`;
   $("#artifact-content").innerHTML = `<div class="empty-state">${icon("session")}<h3>等待调度</h3><p>${escapeHtml(row)} 已进入本批次执行计划，开始处理后将在这里显示GT、日志和报告。</p></div>`;
   return [];
 }

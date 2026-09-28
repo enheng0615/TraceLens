@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 330 72" role="img" aria-labelledby="title desc">
+  <title id="title">ORIGO</title>
+  <desc id="desc">Trace intelligence, from outcome to origin, dark version</desc>
+  <g transform="translate(4 4)">
+    <path d="M46 11C57 17 61 31 56 43C51 55 38 61 25 57C12 53 5 40 8 27C11 14 24 6 37 8C49 10 57 21 55 33C53 44 43 51 32 50C22 49 15 40 16 30C17 21 25 15 34 16C42 17 48 24 47 32C46 39 40 44 33 43C27 42 23 37 24 31C25 26 29 23 34 24" fill="none" stroke="#F7F7F4" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="34" cy="32" r="4.5" fill="#8A82FF"/>
+  </g>
+  <text x="88" y="37" fill="#F7F7F4" font-family="Inter, Avenir Next, -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif" font-size="31" font-weight="760" letter-spacing="4.1">ORIGO</text>
+  <text x="90" y="56" fill="#A4A5AD" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" font-size="9.5" font-weight="600" letter-spacing="1.05">FROM OUTCOME TO ORIGIN</text>
+</svg>

@@ -1,4 +1,4 @@
-# Trace RCA 运行、失败与复跑设计
+# ORIGO 运行、失败与复跑设计
 
 ## 1. 基本原则
 
@@ -156,7 +156,7 @@ Resume 会在写入同一 Attempt 前，把现有失败快照复制到：
 
 ## 6. 不可归因源任务与截断 Tool Result
 
-批量输入只有在以下四个条件**同时成立**时，才写为 `source_run_failed`，不计入 Trace RCA 失败，也不进入失败项复跑：
+批量输入只有在以下四个条件**同时成立**时，才写为 `source_run_failed`，不计入 ORIGO 分析失败，也不进入失败项复跑：
 
 ```text
 Session ID 为空

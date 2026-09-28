@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="src/web/public/assets/logo-horizontal.svg" width="360" alt="Trace RCA">
+  <img src="src/web/public/assets/logo-horizontal.svg" width="360" alt="ORIGO">
 </p>
 
 <p align="center">
@@ -12,9 +12,13 @@
   <img alt="Tests passing" src="https://img.shields.io/badge/tests-passing-brightgreen">
 </p>
 
-# Trace RCA Agent
+# ORIGO
 
-Trace RCA Agent 面向 Agent 评测场景，在**不重新评分、不改写 Ground Truth** 的前提下，利用完整执行 Trace 调查答案为何遗漏指定评分项。它将模型的调查能力与确定性证据校验结合，输出可追溯、可恢复、可审计的 RCA 报告。
+> **别让 Agent 评测止步于“答错了”，更要知道“为什么答错”。**
+
+ORIGO 沿着完整执行 Trace，回看模型输出、工具调用与数据流转，用可验证的原始证据定位答案遗漏关键评分点的真正原因。从单次 Session 到批量任务，它能自动生成**可追溯、可恢复、可审计**的根因分析报告，让 Agent 调优从经验猜测走向证据驱动。
+
+在**不重新评分、不改写 Ground Truth** 的前提下，ORIGO 将模型的调查能力与确定性程序校验结合，帮助开发者更快发现问题、验证判断并持续改进 Agent。
 
 > 当前 Sophon 采集和模型联调依赖内部服务与已登录的 `sophon-cli`。离线测试、核心模块阅读和固定样例回归不需要真实凭证。
 
