@@ -1,0 +1,6 @@
+interface:
+  display_name: "Trace 批次满分过滤"
+  short_description: "按评分列筛出满分题并阻止其进入 Trace RCA 流程"
+  default_prompt: "Use $trace-batch-full-score-filter to exclude full-score rows before running a Trace RCA batch."
+policy:
+  allow_implicit_invocation: true

@@ -1,0 +1,22 @@
+{
+  "schemaVersion": "rca-case-v1",
+  "caseId": "session-<session-id>-<criterion-id>",
+  "sessionId": "<session-id>",
+  "query": "<user query>",
+  "score": null,
+  "officialMissedCriteria": [
+    {
+      "id": "<criterion-id>",
+      "text": "<official missed criterion verbatim>",
+      "officialVerdict": "未命中"
+    }
+  ],
+  "machineGrading": "<official machine grading detail>",
+  "idaAnswer": "<IDA final answer verbatim>",
+  "inputProvenance": {
+    "query": "<source>",
+    "groundTruth": "<source>",
+    "machineGrading": "<source>",
+    "idaAnswer": "<source>"
+  }
+}

@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 306 64" role="img" aria-labelledby="title desc">
+  <title id="title">Trace RCA</title>
+  <desc id="desc">多条 Agent 轨迹收敛至根因定位点</desc>
+  <defs>
+    <linearGradient id="surface" x1="8" y1="5" x2="56" y2="60" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#2997FF"/>
+      <stop offset="1" stop-color="#0062C8"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="60" height="60" rx="16" fill="url(#surface)"/>
+  <g fill="none" stroke="#FFFFFF" stroke-linecap="round" stroke-linejoin="round" stroke-width="3.6">
+    <path d="M15 18h8.5c6.5 0 6 9.7 12.6 10.9"/>
+    <path d="M15 32h20.5"/>
+    <path d="M15 46h8.5c6.5 0 6-9.7 12.6-10.9"/>
+    <circle cx="43" cy="32" r="8.5"/>
+  </g>
+  <g fill="#FFFFFF">
+    <circle cx="15" cy="18" r="2.4"/>
+    <circle cx="15" cy="32" r="2.4"/>
+    <circle cx="15" cy="46" r="2.4"/>
+    <circle cx="43" cy="32" r="3.1"/>
+  </g>
+  <text x="79" y="29" fill="#1D1D1F" font-family="-apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif" font-size="24" font-weight="700" letter-spacing="-0.7">Trace RCA</text>
+  <text x="80" y="48" fill="#6E6E73" font-family="-apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif" font-size="11" font-weight="500" letter-spacing="0.15">Trace-based Root Cause Analysis</text>
+</svg>

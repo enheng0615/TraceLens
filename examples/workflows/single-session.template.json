@@ -1,0 +1,5 @@
+{
+  "sessionId": "<session-id>",
+  "machineGrading": "<包含未命中GT及原因的机评结果>",
+  "idaAnswer": "<IDA最终答案原文>"
+}

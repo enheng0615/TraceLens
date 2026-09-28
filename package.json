@@ -1,0 +1,29 @@
+{
+  "name": "trace-agent",
+  "version": "1.0.0",
+  "description": "Trace root cause analysis agent powered by Pi Agent Core",
+  "scripts": {
+    "check:pi": "node scripts/check-pi.mjs",
+    "test": "node --test",
+    "test:model": "node --env-file=.env scripts/chat-sophon.mjs",
+    "ingest:sophon": "node --env-file=.env scripts/fetch-sophon-session.mjs",
+    "rca:run": "node --env-file=.env scripts/run-rca-case.mjs",
+    "rca:test:29785869": "node --env-file=.env scripts/run-rca-case.mjs --case examples/rca/session-29785869.json --trace-root test_data/29785869/full-raw",
+    "rca:test:29785869:offline": "node scripts/run-rca-case.mjs --mode offline --case examples/rca/session-29785869.json --trace-root test_data/29785869/full-raw",
+    "diagnose:sophon": "node --env-file=.env scripts/diagnose-sophon.mjs",
+    "workflow:csv": "node --env-file=.env scripts/run-trace-rca-csv.mjs",
+    "batch:filter-full-score": "node skills/trace-batch-full-score-filter/scripts/filter-full-score.mjs",
+    "workflow:session": "node --env-file=.env scripts/run-trace-rca-session.mjs",
+    "web": "node --env-file=.env src/web/server.mjs"
+  },
+  "keywords": [],
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "@mariozechner/pi-agent-core": "0.73.1",
+    "@mariozechner/pi-ai": "0.73.1"
+  }
+}
