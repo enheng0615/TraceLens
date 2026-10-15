@@ -251,7 +251,7 @@ export async function runOnlineFeedbackCase({ candidate, timeline: suppliedTimel
     if (decision.readyForConclusion && !errors.length) { ready = true; break; }
   }
   let report, validation;
-  for (let attempt = 0; attempt < 3; attempt++) {
+  for (let attempt = 0; ; attempt++) {
     report = await agent.invoke({ phase: "feedback_final", systemPrompt: `${SYSTEM}\n当前只生成最终报告。顶层仅允许rootCauseHeadline、executiveSummary、problemClassification、feedbackAssessment、phenomenon、causalFindings、rootCauseAssessment、evidenceBoundary。不要输出focus、requirements、hypotheses或evidence账本。causalFindings最多3条；quote只选240字以内精确片段。总输出控制在12000字符以内。`,
       retryInstruction: "只返回最终报告JSON对象；顶层必须有一句rootCauseHeadline、executiveSummary和feedbackAssessment，不能回显输入资料；字符串中的换行和引号必须正确转义。",
       prompt: JSON.stringify({ anchor, focus, requirements, hypotheses, episode, timelineCoverage, errors,
@@ -291,15 +291,11 @@ export async function runOnlineFeedbackCase({ candidate, timeline: suppliedTimel
     if (report.phenomenon?.status === "confirmed" && !(report.phenomenon.evidenceIds?.length)) reportErrors.push("Confirmed delivery phenomenon requires specific evidence");
     if (newLocationEvidence.length) reportErrors.push(`New exact source evidence ${newLocationEvidence.join(", ")} was fetched. Reassess findings against these entries before concluding.`);
     validation = { valid: !reportErrors.length, errors: reportErrors, causalClosure: closure, consistency, rawSources, adjustments };
+    await save("validation.json", validation);
     if (validation.valid) break;
   }
   await save("evidence-ledger.json", ledger.entries);
   await checkpoint(lastRound + 1);
-  await save("validation.json", validation);
-  if (!validation.valid) {
-    await save("feedback-result.json", { scenario: "online-feedback", status: "validation_failed", anchor, focus, episode, validation });
-    throw new Error(`Feedback report validation failed: ${validation.errors.join("; ")}`);
-  }
   if (report.rootCauseAssessment) report.rootCauseAssessment.status = validation.causalClosure.status;
   const result = { scenario: "online-feedback", status: report.feedbackAssessment === "unresolved" ? "unresolved" : "completed",
     investigationBudgetReached: !ready, causalInvestigationStatus: validation.causalClosure.status,

@@ -210,6 +210,32 @@ test("refreshes an empty cache and finds historical Sessions in bounded 30-day w
   }
 });
 
+test("online feedback lookup keeps searching and narrows windows rejected by Sophon", async () => {
+  const temp = await mkdtemp(path.join(os.tmpdir(), "sophon-feedback-lookback-"));
+  try {
+    const calls = [];
+    const startTime = 10_000_000_000;
+    let acceptedWindows = 0;
+    const client = { async fetchJson(outputPath, args) {
+      const sinceIndex = args.indexOf("--since");
+      calls.push(args);
+      if (sinceIndex < 0) return { data: { sessions: [], startTime } };
+      const since = Number(args[sinceIndex + 1]);
+      const until = Number(args[args.indexOf("--until") + 1]);
+      if (until - since > 7 * 24 * 60 * 60 * 1000) throw new Error("查询时间范围超出ES可用范围，请缩小时间范围");
+      acceptedWindows += 1;
+      const payload = { data: { sessions: acceptedWindows === 14 ? [{ sessionId: SESSION_ID, agentId: "agent-1" }] : [] } };
+      await writeJsonAtomic(outputPath, payload);
+      return payload;
+    } };
+    const collector = new SophonSessionCollector({ client, outputRoot: temp, logger: { info() {}, warn() {} } });
+    const result = await collector.lookupSession({ outputDirectory: temp, sessionId: SESSION_ID, agentType: "ida", pageSize: 200, maxLookbackWindows: Infinity });
+    assert.equal(result.strategy, "historical_window");
+    assert.equal(result.windowsQueried, 15);
+    assert.ok(calls.length > 15);
+  } finally { await rm(temp, { recursive: true, force: true }); }
+});
+
 test("recovers a recent Session through direct get when SESSION_INDEX misses it", async () => {
   const temp = await mkdtemp(path.join(os.tmpdir(), "sophon-direct-session-"));
   try {
@@ -227,10 +253,18 @@ test("recovers a recent Session through direct get when SESSION_INDEX misses it"
           await writeJsonAtomic(outputPath, payload);
           return payload;
         }
-        if (args[0] === "session" && args[1] === "get" && args.includes("--all")) {
+        if (args[0] === "session" && args[1] === "get" && !args.includes("--page-token")) {
           const payload = { success: true, data: { turns: [{
             sessionId: SESSION_ID, businessTraceId: TRACE_ID,
             startTime: 1_000_000, endTime: 1_100_000,
+          }], hasMore: true, nextPageToken: "direct-page-2" } };
+          await writeJsonAtomic(outputPath, payload);
+          return payload;
+        }
+        if (args[0] === "session" && args[1] === "get" && args.includes("--page-token")) {
+          const payload = { success: true, data: { turns: [{
+            sessionId: SESSION_ID, businessTraceId: TRACE_ID,
+            startTime: 1_100_001, endTime: 1_200_000,
           }], hasMore: false } };
           await writeJsonAtomic(outputPath, payload);
           return payload;
@@ -244,9 +278,10 @@ test("recovers a recent Session through direct get when SESSION_INDEX misses it"
     });
     assert.equal(result.manifest.status, "completed");
     assert.equal(result.manifest.source.sessionLookup.strategy, "direct_session_get");
-    const direct = calls.find((args) => args[0] === "session" && args[1] === "get" && args.includes("--all"));
+    const direct = calls.find((args) => args[0] === "session" && args[1] === "get" && args.includes("--page-token"));
     assert.ok(direct);
     assert.equal(direct[direct.indexOf("--agent-id") + 1], "agent-1");
+    assert.equal(calls.some((args) => args.includes("--all") || args.includes("--max-bytes")), false);
     assert.equal(calls.some((args) => args.includes("--since") && args[0] === "session"), false);
   } finally {
     await rm(temp, { recursive: true, force: true });

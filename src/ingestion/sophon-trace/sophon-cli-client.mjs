@@ -101,9 +101,12 @@ export class SophonCliClient {
         await rm(tempPath, { force: true });
         const retryable =
           error instanceof SophonCliError &&
-          DEFAULT_RETRY_EXIT_CODES.has(error.details?.exitCode);
+          DEFAULT_RETRY_EXIT_CODES.has(error.details?.exitCode) &&
+          !/查询时间范围超出ES可用范围|缩小时间范围/.test(
+            [error.message, error.details?.diagnostic?.hint].filter(Boolean).join(" "),
+          );
         if (!retryable || attempt > this.retries) break;
-        const delay = this.retryDelayMs * 2 ** (attempt - 1);
+        const delay = Number.isFinite(this.retries) ? this.retryDelayMs * 2 ** (attempt - 1) : this.retryDelayMs;
         this.logger.warn?.(
           `sophon-cli 第 ${attempt} 次执行失败，${delay}ms 后重试`,
         );
@@ -124,10 +127,10 @@ export class SophonCliClient {
       const stderr = [];
       let timedOut = false;
 
-      const timer = setTimeout(() => {
+      const timer = Number.isFinite(this.timeoutMs) && this.timeoutMs > 0 ? setTimeout(() => {
         timedOut = true;
         child.kill("SIGTERM");
-      }, this.timeoutMs);
+      }, this.timeoutMs) : null;
 
       child.stdout.on("data", (chunk) => stdout.push(chunk));
       child.stderr.on("data", (chunk) => stderr.push(chunk));

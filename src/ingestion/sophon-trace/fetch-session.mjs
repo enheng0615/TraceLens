@@ -18,6 +18,10 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+function isSessionWindowRangeError(error) {
+  return /查询时间范围超出ES可用范围|缩小时间范围/.test(String(error?.message ?? ""));
+}
+
 const AGENT_TYPES = new Set(["ida", "aide_solo", "aide_mix"]);
 const DAY_MS = 24 * 60 * 60 * 1_000;
 // Sophon rejects Session list windows greater than 30 days. Stay one second
@@ -94,7 +98,7 @@ export class SophonSessionCollector {
     this.fetchImpl = fetchImpl;
   }
 
-  async lookupSession({ outputDirectory, sessionId, agentType, agentIdHint, pageSize, force }) {
+  async lookupSession({ outputDirectory, sessionId, agentType, agentIdHint, pageSize, force, maxLookbackWindows = SESSION_LOOKBACK_WINDOWS }) {
     const sessionListPath = path.join(outputDirectory, "session/list.json");
     if (!force && (await isValidJsonFile(sessionListPath))) {
       const cached = await readJson(sessionListPath);
@@ -133,33 +137,41 @@ export class SophonSessionCollector {
     // agentId routing key, so probe directly before historical lookback.
     if (agentIdHint) {
       const agentId = assertIdentifier(agentIdHint, "agentId");
-      const directPath = path.join(lookupDirectory, "direct-get.json");
       try {
-        const direct = await this.client.fetchJson(
-          directPath,
-          [
+        const { items: turns } = await fetchCursorPages({
+          client: this.client,
+          directory: path.join(lookupDirectory, "direct-get-pages"),
+          itemKey: "turns",
+          pageSize,
+          force: true,
+          maxPages: Infinity,
+          buildArgs: ({ pageSize: size, pageToken }) => [
             "session", "get", sessionId,
             "--agent-type", agentType,
             "--agent-id", agentId,
-            "--page-size", String(pageSize),
-            "--all",
-            "--max-bytes", "104857600",
+            "--page-size", String(size),
+            ...(pageToken ? ["--page-token", pageToken] : []),
           ],
-          { force: true },
-        );
-        const turns = direct?.data?.turns;
-        if (Array.isArray(turns) && turns.length) {
-          const starts = turns.map((turn) => Number(turn.startTime)).filter(Number.isFinite);
-          const ends = turns.map((turn) => Number(turn.endTime)).filter(Number.isFinite);
-          const traceIds = [...new Set(turns.map((turn) => turn.businessTraceId).filter(Boolean).map(String))];
-          if (starts.length && ends.length && traceIds.length) {
+        });
+        if (turns.length) {
+          let startTime = Infinity;
+          let endTime = -Infinity;
+          const traceIds = new Set();
+          for (const turn of turns) {
+            const start = Number(turn.startTime);
+            const end = Number(turn.endTime);
+            if (Number.isFinite(start)) startTime = Math.min(startTime, start);
+            if (Number.isFinite(end)) endTime = Math.max(endTime, end);
+            if (turn.businessTraceId) traceIds.add(String(turn.businessTraceId));
+          }
+          if (Number.isFinite(startTime) && Number.isFinite(endTime) && traceIds.size) {
             const payload = {
               success: true,
               data: {
                 sessions: [{
                   sessionId, agentId,
-                  startTime: Math.min(...starts), endTime: Math.max(...ends),
-                  traceCount: traceIds.length, latestTraceId: traceIds.at(-1),
+                  startTime, endTime,
+                  traceCount: traceIds.size, latestTraceId: [...traceIds].at(-1),
                 }],
                 hasMore: false,
               },
@@ -195,32 +207,43 @@ export class SophonSessionCollector {
       ? serverRecentStart
       : this.nowMs() - SESSION_LOOKUP_WINDOW_MS;
 
-    for (let index = 1; index <= SESSION_LOOKBACK_WINDOWS && previousStart > 0; index += 1) {
+    let windowMs = SESSION_LOOKUP_WINDOW_MS;
+    let windowsQueried = 1;
+    for (let index = 1; index <= maxLookbackWindows && previousStart > 0;) {
       const until = Math.max(0, previousStart - 1);
-      const since = Math.max(0, until - SESSION_LOOKUP_WINDOW_MS);
-      this.logger.info?.(`Session ${sessionId} 未在近期窗口命中，回溯窗口 ${index}/${SESSION_LOOKBACK_WINDOWS}`);
+      const since = Math.max(0, until - windowMs);
+      this.logger.info?.(`Session ${sessionId} 未在近期窗口命中，回溯窗口 ${index}`);
       const windowPath = path.join(lookupDirectory, `window-${String(index).padStart(3, "0")}.json`);
-      const payload = await this.client.fetchJson(
-        windowPath,
-        [...baseArgs, "--since", String(since), "--until", String(until)],
-        { force: true },
-      );
+      let payload;
+      try {
+        payload = await this.client.fetchJson(
+          windowPath,
+          [...baseArgs, "--since", String(since), "--until", String(until)],
+          { force: true },
+        );
+      } catch (error) {
+        if (!isSessionWindowRangeError(error) || windowMs <= 1) throw error;
+        windowMs = Math.max(1, Math.floor(windowMs / 2));
+        this.logger.warn?.(`Session ${sessionId} 的回溯窗口被 Sophon 拒绝，缩小至 ${windowMs}ms 后重试`);
+        continue;
+      }
+      windowsQueried += 1;
       if (matchingSessions(payload, sessionId).length === 1) {
         await writeJsonAtomic(sessionListPath, payload);
-        return { payload, strategy: "historical_window", windowsQueried: index + 1, since, until };
+        return { payload, strategy: "historical_window", windowsQueried, since, until };
       }
       previousStart = since;
+      index += 1;
     }
 
     throw new TraceIngestionError(
-      `在近期及${SESSION_LOOKBACK_WINDOWS}个历史窗口中未找到 Session ${sessionId}`,
+      `在已查询的 Session 历史窗口中未找到 Session ${sessionId}`,
       {
         code: "SESSION_NOT_FOUND",
         details: {
           sessionId,
-          windowsQueried: SESSION_LOOKBACK_WINDOWS + 1,
-          windowLimitDays: 30,
-          maximumLookbackDays: SESSION_LOOKBACK_WINDOWS * 30,
+          windowsQueried,
+          earliestQueriedTimestamp: previousStart,
         },
       },
     );

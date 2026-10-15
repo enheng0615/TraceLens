@@ -117,3 +117,23 @@ test("online runner expands old focus, blocks future reads and persists unresolv
     await assert.rejects(runOnlineFeedbackCase({ candidate: { ...candidate, requestIdList: "changed" }, timeline, traceRoot: root, outputDir, agent, resume: true }), /identity changed/);
   });
 });
+
+test("final feedback validation can recover after three invalid proposals", async () => {
+  await fixture(async (root) => {
+    let finalAttempts = 0;
+    const agent = { async invoke({ phase }) {
+      if (phase !== "feedback_final") return { actions: [], readyForConclusion: true };
+      finalAttempts += 1;
+      return {
+        rootCauseHeadline: finalAttempts < 4 ? "" : "根因尚未定位，当前证据不足以确认反馈原因。",
+        executiveSummary: "当前证据不足以确认反馈原因。",
+        problemClassification: { category: "尚未定位具体缺陷", rationale: "当前证据不足", evidenceIds: [] },
+        feedbackAssessment: "unresolved", phenomenon: { status: "unresolved", evidenceIds: [] },
+        causalFindings: [], rootCauseAssessment: { confidence: "low", evidenceIds: [] },
+      };
+    } };
+    const result = await runOnlineFeedbackCase({ candidate, timeline, traceRoot: root, outputDir: path.join(root, "validation-run"), agent, maxRounds: 1 });
+    assert.equal(result.status, "unresolved");
+    assert.equal(finalAttempts, 4);
+  });
+});

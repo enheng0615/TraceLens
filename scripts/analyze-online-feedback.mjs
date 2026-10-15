@@ -14,11 +14,11 @@ for (let i = 2; i < process.argv.length; i++) {
   if (key === "--resume") args.resume = true;
   else if (key === "--fetch-missing") args.fetchMissing = true;
   else if (key === "--help") args.help = true;
-  else if (["--session-id", "--query", "--candidate", "--timeline-root", "--trace-root", "--output-dir", "--max-rounds", "--max-turns", "--region", "--cache-root", "--max-trace-mib"].includes(key) && process.argv[i + 1]) args[key.slice(2)] = process.argv[++i];
+  else if (["--session-id", "--query", "--candidate", "--timeline-root", "--trace-root", "--output-dir", "--max-rounds", "--max-turns", "--region", "--cache-root"].includes(key) && process.argv[i + 1]) args[key.slice(2)] = process.argv[++i];
   else throw new Error(`Unknown or incomplete argument: ${key}`);
 }
 if (args.help) {
-  console.log("Usage: npm run feedback:analyze -- --session-id <id> (--query <negative query> | --candidate <candidate.json>) --timeline-root <Turn snapshot> --trace-root <local raw Trace> --output-dir <new run directory> [--max-rounds 12] [--max-turns 24] [--resume] [--fetch-missing --region <region> --cache-root <directory> --max-trace-mib 512]");
+  console.log("Usage: npm run feedback:analyze -- --session-id <id> (--query <negative query> | --candidate <candidate.json>) --timeline-root <Turn snapshot> --trace-root <local raw Trace> --output-dir <new run directory> [--max-rounds 12] [--max-turns 24] [--resume] [--fetch-missing --region <region> --cache-root <directory>]");
 } else {
   for (const key of ["session-id", "timeline-root", "trace-root", "output-dir"]) if (!args[key]) throw new Error(`--${key} is required`);
   if (!args.query && !args.candidate) throw new Error("--query or --candidate is required");
@@ -37,8 +37,7 @@ if (args.help) {
   if (args.fetchMissing && (!args.region || !coverage.identity.agentId || !coverage.identity.agentType)) throw new Error("--fetch-missing requires --region and verified agentId/agentType in the Turn snapshot");
   const collectEpisode = args.fetchMissing ? (episode) => collectFeedbackEpisode({
     episode, identity: coverage.identity, cacheRoot: args["cache-root"] ?? "data/raw/sophon-feedback-cache",
-    maxBytes: Number(args["max-trace-mib"] ?? 512) * 1024 * 1024,
-    client: new SophonCliClient({ region: args.region, tenant: process.env.SOPHON_INGESTION_TENANT ?? "data", userEmail: process.env.SOPHON_INGESTION_USER_EMAIL ?? process.env.SOPHON_OPERATOR_EMAIL }),
+    client: new SophonCliClient({ region: args.region, tenant: process.env.SOPHON_INGESTION_TENANT ?? "data", userEmail: process.env.SOPHON_INGESTION_USER_EMAIL ?? process.env.SOPHON_OPERATOR_EMAIL, timeoutMs: null, retries: Infinity }),
   }) : undefined;
   const result = await runOnlineFeedbackCase({ candidate, timeline, timelineCoverage: coverage,
     traceRoot: path.resolve(args["trace-root"]), outputDir, agent: new PiJsonAgent({ logger }),

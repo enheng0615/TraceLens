@@ -25,8 +25,7 @@ test("selective collector fetches only selected trees/details and reuses immutab
     assert.ok(calls[0].includes("--exclude-input-output"));
     await collectFeedbackEpisode(options);
     assert.equal(calls.length, 2);
-    await assert.rejects(collectFeedbackEpisode({ ...options, maxBytes: 1 }), /budget exhausted/);
-    await collectFeedbackEpisode(options); // Failed budget checks release the lock.
     await assert.rejects(collectFeedbackEpisode({ ...options, episode: { ...episode, feedbackReceivedAt: 15 } }), /boundary/);
+    await collectFeedbackEpisode(options); // Failed boundary checks release the lock.
   } finally { await rm(cacheRoot, { recursive: true, force: true }); }
 });

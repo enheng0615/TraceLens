@@ -19,10 +19,10 @@ async function exists(file) { try { await access(file); return true; } catch (er
 export async function prepareFeedbackTimeline({ sessionId, outputDir, client, agentId, agentType = "ida" }) {
   if (!new Set(["ida", "aide_solo", "aide_mix"]).has(agentType)) throw new Error("不支持的 agentType");
   const collector = new SophonSessionCollector({ client, outputRoot: outputDir });
-  const lookup = await collector.lookupSession({ outputDirectory: outputDir, sessionId, agentType, agentIdHint: agentId, pageSize: 200, force: false });
+  const lookup = await collector.lookupSession({ outputDirectory: outputDir, sessionId, agentType, agentIdHint: agentId, pageSize: 200, force: false, maxLookbackWindows: Infinity });
   const matches = lookup.payload?.data?.sessions?.filter((s) => String(s.sessionId) === sessionId) ?? [];
   if (matches.length !== 1 || !/^[A-Za-z0-9._:-]+$/.test(String(matches[0].agentId ?? ""))) throw new Error("未能确认 Session 的 Agent 路由");
-  await fetchCursorPages({ client, directory: path.join(outputDir, "session/detail-pages"), itemKey: "turns", maxPages: 100,
+  await fetchCursorPages({ client, directory: path.join(outputDir, "session/detail-pages"), itemKey: "turns", maxPages: Infinity,
     buildArgs: ({ pageSize, pageToken }) => ["session", "get", sessionId, "--agent-type", agentType, "--agent-id", String(matches[0].agentId), "--page-size", String(pageSize), ...(pageToken ? ["--page-token", pageToken] : [])] });
   const loaded = await loadFeedbackTimeline(outputDir, sessionId);
   if (loaded.coverage.identity.agentId !== String(matches[0].agentId) || loaded.coverage.identity.agentType !== agentType) throw new Error("Session历史与查询路由身份不一致");
@@ -53,7 +53,7 @@ export async function runFeedbackWorkflow({ input, workflowOutputRoot, traceOutp
     let timelineRoot;
     for (const root of candidates) if (await exists(path.join(root, "session/detail-pages"))) { timelineRoot = root; break; }
     if (input.timelineRoot && !timelineRoot) throw new Error("指定的历史快照目录不存在");
-    const sophon = client ?? new SophonCliClient({ ...ingestion, logger });
+    const sophon = client ?? new SophonCliClient({ ...ingestion, timeoutMs: null, retries: Infinity, logger });
     let loaded = timelineRoot ? await loadFeedbackTimeline(timelineRoot, sessionId) : await prepareFeedbackTimeline({ sessionId,
       outputDir: path.join(outputDir, "source"), client: sophon, agentId: input.agentId ?? ingestion.agentId, agentType: input.agentType ?? ingestion.agentType ?? "ida" });
     timelineRoot ??= path.join(outputDir, "source");
@@ -84,7 +84,7 @@ export async function runFeedbackWorkflow({ input, workflowOutputRoot, traceOutp
     const collectEpisode = input.fetchMissing === false ? undefined : async (episode) => {
       if (!coverage.identity.agentId || !coverage.identity.agentType) throw new Error("补拉 Trace 需要历史快照中已核实的 agentId / agentType");
       return collectFeedbackEpisode({ episode, identity: coverage.identity, client: sophon,
-        cacheRoot: path.resolve(projectRoot, "data/raw/sophon-feedback-cache"), maxBytes: 512 * 1024 * 1024 });
+        cacheRoot: path.resolve(projectRoot, "data/raw/sophon-feedback-cache") });
     };
     const result = await runCase({ candidate, timeline, timelineCoverage: coverage, traceRoot, outputDir: rcaOutputDir,
       agent: agentFactory(runLogger), maxRounds, maxTurns, collectEpisode });

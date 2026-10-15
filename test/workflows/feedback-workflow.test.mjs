@@ -115,3 +115,24 @@ test("automatic lookup refreshes stale cached history when feedback is missing",
   assert.ok(result.source.timelineRoot.endsWith("source"));
   assert.equal(result.status, "completed_with_evidence_gaps");
 }));
+
+test("feedback timeline collection continues beyond the former 100-page cap", async () => fixture(async root => {
+  const client = { async fetchJson(file, args) {
+    let data;
+    if (args[1] === "list") data = { sessions: [{ sessionId: "1", agentId: "agent1" }] };
+    else {
+      const tokenIndex = args.indexOf("--page-token");
+      const page = tokenIndex < 0 ? 1 : Number(args[tokenIndex + 1]);
+      data = { sessionId: "1", agentId: "agent1", agentType: "ida", total: 101,
+        hasMore: page < 101, nextPageToken: page < 101 ? String(page + 1) : null,
+        turns: [{ sessionId: "1", turnId: `t${page}`, businessTraceId: `trace${page}`,
+          startTime: page * 10, endTime: page * 10 + 1, input: "q", output: "a" }] };
+    }
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, JSON.stringify({ data }));
+    return { data };
+  } };
+  const result = await prepareFeedbackTimeline({ sessionId: "1", outputDir: root, client });
+  assert.equal(result.timeline.length, 101);
+  assert.equal(result.coverage.paginationComplete, true);
+}));
