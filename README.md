@@ -1,7 +1,7 @@
 <p align="center"><img src="src/web/public/assets/tracelens-logo.png" width="360" alt="TraceLens logo"></p>
 
 <p align="center">
-  沿 Agent Trace 核验证据，解释负向反馈与评测失分
+  沿 Agent Trace 核验证据
 </p>
 
 # TraceLens
