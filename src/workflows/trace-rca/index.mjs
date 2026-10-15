@@ -1,4 +1,5 @@
 export { readRcaCsv, parseCsv, classifySourceRunStatus, DEFAULT_CSV_COLUMNS } from "./csv-input.mjs";
+export { inspectEvaluationInput, classifyEvaluationInputStatus } from "./evaluation-input.mjs";
 export { parseGroundTruth, extractMissedCriteria } from "./grading-parser.mjs";
 export { extractSessionExchange } from "./trace-case-source.mjs";
 export { resolveEvaluatedAnswer, hasExplicitAttachmentTruncation } from "./answer-resolver.mjs";

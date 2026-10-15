@@ -210,6 +210,113 @@ test("refreshes an empty cache and finds historical Sessions in bounded 30-day w
   }
 });
 
+test("recovers a recent Session through direct get when SESSION_INDEX misses it", async () => {
+  const temp = await mkdtemp(path.join(os.tmpdir(), "sophon-direct-session-"));
+  try {
+    const base = new FakeSophonClient();
+    const calls = [];
+    const client = {
+      tenant: base.tenant,
+      async fetchJson(outputPath, args, options = {}) {
+        calls.push(args);
+        if (args[0] === "session" && args[1] === "list") {
+          const payload = { success: true, data: {
+            total: 0, sessions: [], hasMore: false,
+            startTime: 1_000_000, endTime: 2_000_000,
+          } };
+          await writeJsonAtomic(outputPath, payload);
+          return payload;
+        }
+        if (args[0] === "session" && args[1] === "get" && args.includes("--all")) {
+          const payload = { success: true, data: { turns: [{
+            sessionId: SESSION_ID, businessTraceId: TRACE_ID,
+            startTime: 1_000_000, endTime: 1_100_000,
+          }], hasMore: false } };
+          await writeJsonAtomic(outputPath, payload);
+          return payload;
+        }
+        return base.fetchJson(outputPath, args, options);
+      },
+    };
+    const collector = new SophonSessionCollector({ client, outputRoot: temp, logger: { info() {}, warn() {} } });
+    const result = await collector.collect({
+      sessionId: SESSION_ID, agentIdHint: "agent-1", pageSize: 2, paddingMs: 500,
+    });
+    assert.equal(result.manifest.status, "completed");
+    assert.equal(result.manifest.source.sessionLookup.strategy, "direct_session_get");
+    const direct = calls.find((args) => args[0] === "session" && args[1] === "get" && args.includes("--all"));
+    assert.ok(direct);
+    assert.equal(direct[direct.indexOf("--agent-id") + 1], "agent-1");
+    assert.equal(calls.some((args) => args.includes("--since") && args[0] === "session"), false);
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+});
+
+test("surfaces direct Session lookup failure without misleading historical fallback", async () => {
+  const temp = await mkdtemp(path.join(os.tmpdir(), "sophon-direct-session-failed-"));
+  try {
+    const calls = [];
+    const client = {
+      tenant: "test",
+      async fetchJson(outputPath, args) {
+        calls.push(args);
+        if (args[0] === "session" && args[1] === "list") {
+          const payload = { success: true, data: { sessions: [], hasMore: false, startTime: 1_000_000 } };
+          await writeJsonAtomic(outputPath, payload);
+          return payload;
+        }
+        const error = new Error("permission denied for direct session get");
+        error.code = "SOPHON_CLI_ERROR";
+        throw error;
+      },
+    };
+    const collector = new SophonSessionCollector({ client, outputRoot: temp, logger: { info() {}, warn() {} } });
+    await assert.rejects(
+      collector.collect({ sessionId: SESSION_ID, agentIdHint: "agent-1", pageSize: 2 }),
+      (error) => {
+        assert.equal(error.code, "SESSION_DIRECT_LOOKUP_FAILED");
+        assert.equal(error.details.causeCode, "SOPHON_CLI_ERROR");
+        assert.equal(error.details.sessionId, SESSION_ID);
+        return true;
+      },
+    );
+    assert.equal(calls.filter((args) => args[0] === "session" && args[1] === "get").length, 1);
+    assert.equal(calls.some((args) => args[0] === "session" && args.includes("--since")), false);
+    const manifest = JSON.parse(await readFile(path.join(temp, SESSION_ID, "manifest.json"), "utf8"));
+    assert.equal(manifest.error.code, "SESSION_DIRECT_LOOKUP_FAILED");
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+});
+
+test("classifies a direct Session response without usable Turn metadata", async () => {
+  const temp = await mkdtemp(path.join(os.tmpdir(), "sophon-direct-session-incomplete-"));
+  try {
+    const client = {
+      tenant: "test",
+      async fetchJson(outputPath, args) {
+        const payload = args[1] === "list"
+          ? { success: true, data: { sessions: [], hasMore: false } }
+          : { success: true, data: { turns: [{ businessTraceId: TRACE_ID }], hasMore: false } };
+        await writeJsonAtomic(outputPath, payload);
+        return payload;
+      },
+    };
+    const collector = new SophonSessionCollector({ client, outputRoot: temp, logger: { info() {}, warn() {} } });
+    await assert.rejects(
+      collector.collect({ sessionId: SESSION_ID, agentIdHint: "agent-1", pageSize: 2 }),
+      (error) => {
+        assert.equal(error.code, "SESSION_DIRECT_LOOKUP_FAILED");
+        assert.equal(error.details.causeCode, "DIRECT_SESSION_RESPONSE_INCOMPLETE");
+        return true;
+      },
+    );
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+});
+
 class TruncatedSophonClient extends FakeSophonClient {
   constructor(downloadUrl) {
     super();
@@ -239,6 +346,50 @@ class TruncatedSophonClient extends FakeSophonClient {
     return payload;
   }
 }
+
+class DisplayCopySophonClient extends FakeSophonClient {
+  async fetchJson(outputPath, args) {
+    const payload = await super.fetchJson(outputPath, args);
+    const full = "complete-source-payload ".repeat(700);
+    const output = JSON.stringify({
+      tool_name: "bash",
+      output: full,
+      resources: [{
+        result: `${full.slice(0, 9_985)}...[truncated]`,
+        isResultTruncated: true,
+        originalResultChars: full.length + 12,
+        fullResultDownloadUrl: "https://ida.bytedance.net/dataAgent/llm/api/v2/deepresearch/images?file_path=display-copy.md",
+      }],
+    });
+    const patch = (span) => span?.id === "span-tool" ? { ...span, output } : span;
+    const command = args.slice(0, 2).join(" ");
+    if (command === "trace list") payload.data.spans = payload.data.spans.map(patch);
+    if (command === "trace get" && payload.data?.id === "span-tool") payload.data = patch(payload.data);
+    if (command === "trace tree") {
+      payload.data = patch(payload.data);
+      payload.data.childs = payload.data.childs.map(patch);
+    }
+    await writeJsonAtomic(outputPath, payload);
+    return payload;
+  }
+}
+
+test("does not mark a shortened display copy as a missing Trace payload", async () => {
+  const temp = await mkdtemp(path.join(os.tmpdir(), "sophon-display-copy-"));
+  try {
+    const collector = new SophonSessionCollector({
+      client: new DisplayCopySophonClient(), outputRoot: temp,
+      logger: { info() {}, warn() {} },
+      fetchImpl: async () => { throw new Error("complete sibling output must not be downloaded"); },
+    });
+    const result = await collector.collect({ sessionId: SESSION_ID, pageSize: 2, paddingMs: 500 });
+    assert.equal(result.integrity.complete, true);
+    assert.equal(result.integrity.payloads.unresolvedTruncationMarkers, 0);
+    assert.deepEqual(result.integrity.expandedToolResults.attempts, []);
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+});
 
 test("recovers truncated Tool Results and makes the enriched content searchable", async () => {
   const temp = await mkdtemp(path.join(os.tmpdir(), "sophon-expanded-result-"));

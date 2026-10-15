@@ -11,6 +11,7 @@ import { resolveEvaluatedAnswer } from "./answer-resolver.mjs";
 import { compareEvaluatedQuery } from "./content-alignment.mjs";
 import { renderWorkflowSummary } from "./workflow-summary.mjs";
 import { isFullScore } from "./full-score-filter.mjs";
+import { inspectEvaluationInput } from "./evaluation-input.mjs";
 
 function timestampId(date = new Date()) {
   return date.toISOString().replace(/[:.]/g, "-");
@@ -101,6 +102,7 @@ function counts(items, rowCount, plannedCriteria = items.length, totalWorkUnits 
     totalWorkUnits,
     fullScoreSkipped: items.filter((item) => item.reason === "full_score").length,
     sourceRunFailed: items.filter((item) => item.status === "source_run_failed").length,
+    evaluationInputIssues: items.filter((item) => item.status === "evaluation_input_issue").length,
     running: items.filter((item) => item.status === "running").length,
     completed: items.filter((item) => ["completed", "completed_with_evidence_gaps"].includes(item.status)).length,
     completedWithEvidenceGaps: items.filter((item) => item.status === "completed_with_evidence_gaps").length,
@@ -150,19 +152,31 @@ async function runWorkflow({
   }
   const sourceRunFailedRecords = selectedRecords.filter((record) => record.sourceRunStatus?.status === "source_run_failed");
   const fullScoreRecords = skipFullScore ? selectedRecords.filter((record) => !record.sourceRunStatus && isFullScore(record.score)) : [];
-  const recordsToRun = selectedRecords.filter((record) => !record.sourceRunStatus && (!skipFullScore || !isFullScore(record.score)));
+  const candidateRecords = selectedRecords.filter((record) => !record.sourceRunStatus && (!skipFullScore || !isFullScore(record.score)));
+  const evaluationByRecord = new Map(candidateRecords.map((record) => [record, source?.type === "csv"
+    ? inspectEvaluationInput({
+        score: record.score,
+        machineGrading: record.machineGrading,
+        groundTruth: record.groundTruth,
+        explicitGt: record.explicitGt,
+      })
+    : null]));
+  const evaluationIssueRecords = candidateRecords.filter((record) => evaluationByRecord.get(record)?.kind === "evaluation_input_issue");
+  const recordsToRun = candidateRecords.filter((record) => !evaluationIssueRecords.includes(record));
   const executionPlan = source?.type === "csv" ? {
     schemaVersion: "trace-rca-execution-plan-v1",
     unit: "csv_row",
     inputRows: selectedRecords.length,
     fullScoreRows: fullScoreRecords.length,
-    nonFullScoreRows: sourceRunFailedRecords.length + recordsToRun.length,
+    nonFullScoreRows: sourceRunFailedRecords.length + evaluationIssueRecords.length + recordsToRun.length,
     records: selectedRecords
       .filter((record) => !fullScoreRecords.includes(record))
       .map((record) => ({
         rowNumber: record.rowNumber,
         sessionId: String(record.sessionId ?? ""),
-        initialStatus: record.sourceRunStatus ? "source_run_failed" : "queued",
+        initialStatus: record.sourceRunStatus
+          ? "source_run_failed"
+          : evaluationByRecord.get(record)?.kind === "evaluation_input_issue" ? "evaluation_input_issue" : "queued",
       })),
   } : null;
   // The UI needs the denominator before RCA cases are instantiated.
@@ -170,17 +184,17 @@ async function runWorkflow({
   // record the precise parsing failure in the manifest.
   const plannedCriteria = recordsToRun.reduce((total, record) => {
     try {
-      const criteria = extractMissedCriteria({
-        machineGrading: record.machineGrading,
-        groundTruth: record.groundTruth,
-        explicitGt: record.explicitGt,
-      });
+      const criteria = evaluationByRecord.get(record)?.criteria ?? extractMissedCriteria({
+          machineGrading: record.machineGrading,
+          groundTruth: record.groundTruth,
+          explicitGt: record.explicitGt,
+        });
       return total + criteriaForRecord(record, criteria, retrySelection).length;
     } catch {
       return total + 1;
     }
   }, 0);
-  const totalWorkUnits = plannedCriteria + fullScoreRecords.length + sourceRunFailedRecords.length;
+  const totalWorkUnits = plannedCriteria + fullScoreRecords.length + sourceRunFailedRecords.length + evaluationIssueRecords.length;
   const collector = dependencies.collector ?? createSessionCollector({ traceOutputRoot, ingestion, logger });
   const ensureTrace = dependencies.ensureTrace ?? ensureSessionTrace;
   const runRca = dependencies.runRca ?? runRcaCase;
@@ -250,6 +264,7 @@ async function runWorkflow({
           ? sessionItems.some((item) => ["completed", "completed_with_evidence_gaps"].includes(item.status)) ? "completed_with_failures" : "failed"
           : sessionItems.some((item) => item.status === "completed_with_evidence_gaps") ? "completed_with_evidence_gaps"
             : sessionItems.some((item) => item.status === "completed") ? "completed"
+            : sessionItems.every((item) => item.status === "evaluation_input_issue") ? "evaluation_input_issue"
             : sessionItems.every((item) => item.status === "source_run_failed") ? "source_run_failed" : "skipped",
         updatedAt: manifest.updatedAt,
         items: sessionItems,
@@ -270,6 +285,21 @@ async function runWorkflow({
       label: record.sourceRunStatus.label,
       detail: record.sourceRunStatus.detail,
       conditions: record.sourceRunStatus.conditions,
+    });
+  }
+  for (const record of evaluationIssueRecords) {
+    const issue = record.evaluationInputStatus ?? evaluationByRecord.get(record)?.issue;
+    addItem(record, {
+      rowNumber: record.rowNumber,
+      sessionId: String(record.sessionId ?? ""),
+      status: "evaluation_input_issue",
+      stage: "evaluation_input",
+      reason: "evaluation_input_issue",
+      code: issue?.code ?? "EVALUATION_INPUT_INCOMPLETE",
+      label: issue?.label ?? "评测结果不完整",
+      detail: issue?.detail ?? "上游评测没有形成可用于Trace归因的未命中GT。",
+      remediation: issue?.remediation,
+      conditions: issue?.conditions,
     });
   }
   for (const record of fullScoreRecords) {
@@ -304,6 +334,7 @@ async function runWorkflow({
       if (!traceCache.has(traceCacheKey)) {
         traceCache.set(traceCacheKey, ensureTrace({
           sessionId: record.sessionId,
+          agentId: record.agentId,
           traceOutputRoot,
           collector,
           ingestion,
@@ -344,11 +375,11 @@ async function runWorkflow({
         throw error;
       }
 
-      const parsedCriteria = extractMissedCriteria({
-        machineGrading: record.machineGrading,
-        groundTruth: record.groundTruth,
-        explicitGt: record.explicitGt,
-      });
+      const parsedCriteria = evaluationByRecord.get(record)?.criteria ?? extractMissedCriteria({
+          machineGrading: record.machineGrading,
+          groundTruth: record.groundTruth,
+          explicitGt: record.explicitGt,
+        });
       const criteria = criteriaForRecord(record, parsedCriteria, retrySelection);
       if (Array.isArray(retrySelection) && retrySelection.length && parsedCriteria.length && !criteria.length) {
         const error = new Error(`Retry selection does not match any missed criterion for session ${record.sessionId}`);

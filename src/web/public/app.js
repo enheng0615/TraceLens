@@ -10,21 +10,23 @@ const state = {
   currentJob: null,
   detailReturnView: "reports",
   csvFile: null,
+  feedbackBatchFile: null,
   poll: null,
   activeJobStatus: null,
   retryJob: null,
   retryScope: null,
+  artifactContent: null,
 };
 
-const titles = { workspace: "ORIGO", "session-new": "单 Session 归因", "csv-new": "批量 CSV 归因", reports: "归因报告", history: "运行历史", detail: "报告详情", settings: "运行配置" };
+const titles = { workspace: "工作台", feedback: "负向反馈", "feedback-new": "单条反馈", "feedback-batch-new": "批量反馈", offline: "离线题集", "session-new": "单 Session 归因", "csv-new": "批量 CSV 归因", reports: "归因报告", history: "运行历史", detail: "报告详情", settings: "运行配置" };
 const statusNames = {
   queued: "等待处理", running: "运行中", completed: "已完成", completed_with_evidence_gaps: "完成 · Trace局部不完整", completed_with_failures: "部分失败",
-  completed_no_action: "无需归因", source_run_failed: "源任务未运行", failed: "失败", cancelled: "已取消",
+  completed_no_action: "无需归因", evaluation_input_issue: "评测输入问题", source_run_failed: "源任务未运行", failed: "失败", cancelled: "已取消",
 };
 const stageNames = {
   bootstrap: "初始化", scoring_gap: "评分差距", trace_map: "执行地图", final_rca: "最终报告",
   complete: "完成", failed: "失败", source_run: "源任务状态", resume: "断点恢复", investigation_stop: "调查停止",
-  input_validation: "输入校验", ingestion: "Trace采集", preparation: "归因准备", investigation: "Trace调查", planned: "等待调度",
+  input_validation: "输入校验", evaluation_input: "评测输入预检", ingestion: "Trace采集", preparation: "归因准备", investigation: "Trace调查", planned: "等待调度",
 };
 
 function renderFailureDiagnosis(job) {
@@ -33,7 +35,7 @@ function renderFailureDiagnosis(job) {
   const issue = diagnosis.inputInspection?.issues?.[0];
   return `<section class="failure-diagnosis" role="alert" aria-labelledby="failure-diagnosis-title">
     <div class="failure-diagnosis-head"><span>${icon("stop")}</span><div><small>${escapeHtml(diagnosis.stageLabel || "任务失败")}${diagnosis.code ? ` · ${escapeHtml(diagnosis.code)}` : ""}</small><h3 id="failure-diagnosis-title">${escapeHtml(diagnosis.message || "任务执行失败")}</h3></div></div>
-    <div class="failure-diagnosis-grid"><div><strong>影响范围</strong><p>${escapeHtml(diagnosis.impact || "查看日志确认影响范围。")}</p></div><div><strong>处理建议</strong><p>${escapeHtml(diagnosis.remediation || "修复后创建新的Attempt。")}</p></div></div>
+    <div class="failure-diagnosis-grid"><div><strong>影响范围</strong><p>${escapeHtml(diagnosis.impact || "查看日志确认影响范围。")}</p></div><div><strong>处理建议</strong><p>${escapeHtml(diagnosis.remediation || "修复后创建新一次运行。")}</p></div></div>
     ${issue ? `<p class="failure-diagnosis-meta">CSV 第 ${escapeHtml(issue.rowNumber)} 行 · 字段 ${escapeHtml(issue.field)} · 分数状态 ${escapeHtml(issue.scoreState)}</p>` : ""}
   </section>`;
 }
@@ -68,9 +70,18 @@ async function api(path, options = {}) {
 }
 
 function showView(name) {
+  if (!titles[name]) name = "workspace";
   $$(".view").forEach((view) => view.classList.toggle("active", view.id === `${name}-view`));
-  $$(".nav-link[data-view]").forEach((item) => item.classList.toggle("active", item.dataset.view === name));
-  document.title = `${titles[name] || "ORIGO"} - ORIGO`;
+  $$(".nav-link[data-view]").forEach((item) => {
+    const activeView = ["session-new", "csv-new"].includes(name) ? "offline" : ["feedback-new", "feedback-batch-new"].includes(name) ? "feedback" : name;
+    const active = item.dataset.view === activeView;
+    item.classList.toggle("active", active);
+    if (active) item.setAttribute("aria-current", "page");
+    else item.removeAttribute("aria-current");
+  });
+  document.title = `${titles[name] || "TraceLens"} - TraceLens`;
+  $("#view-location").textContent = `工作空间 / ${titles[name]}`;
+  if (name !== "detail" && location.hash !== `#${name}`) history.pushState(null, "", `#${name}`);
   window.scrollTo({ top: 0, behavior: "instant" });
   if (name !== "detail") {
     state.activeJobId = null;
@@ -79,23 +90,37 @@ function showView(name) {
   $("#main").focus({ preventScroll: true });
 }
 
-function statusBadge(status) {
-  return `<span class="status ${escapeHtml(status)}">${escapeHtml(statusNames[status] || status)}</span>`;
+function statusBadge(status, type) {
+  const label = type === "feedback" && status === "completed_with_evidence_gaps" ? "报告已生成 · 待核实" : statusNames[status] || status;
+  return `<span class="status ${escapeHtml(status)}">${escapeHtml(label)}</span>`;
+}
+
+function progressLabel(job) {
+  const label = job.progress?.label || job.progress?.stage || job.status;
+  return statusNames[label] || stageNames[label] || label || "等待状态";
+}
+
+function feedbackBatchLabel(job) {
+  const start = Number(job.inputSummary?.sessionStart) || 1;
+  const selected = Number(job.inputSummary?.selectedSessions) || 0;
+  const range = selected ? `序号 ${start}–${start + selected - 1}` : `从序号 ${start} 开始`;
+  const batch = job.batchSeries?.batchNumber ? ` · 第 ${job.batchSeries.batchNumber} 批` : "";
+  return `批量反馈 · ${job.inputSummary.fileName}${batch} · ${range}`;
 }
 
 function jobTitle(job) {
-  const base = job.type === "session" ? `Session ${job.inputSummary.sessionId}` : job.inputSummary.fileName || "CSV 批量任务";
+  const base = job.type === "feedback" ? `反馈分析 · ${job.inputSummary.sessionId}` : job.type === "feedback-batch" ? feedbackBatchLabel(job) : job.type === "session" ? `Session ${job.inputSummary.sessionId}` : job.inputSummary.fileName || "CSV 批量任务";
   const attempt = Number(job.lineage?.attempt) || 1;
-  return attempt > 1 ? `${base} · Attempt ${attempt}` : base;
+  return attempt > 1 ? `${base} · 第 ${attempt} 次运行` : base;
 }
 
 function jobRows(jobs) {
-  if (!jobs.length) return `<div class="empty-list"><strong>还没有归因任务</strong>从单 Session 或 CSV 创建第一条全链路运行。</div>`;
+  if (!jobs.length) return `<div class="empty-list"><strong>没有符合条件的任务</strong>调整筛选条件，或从负向反馈、离线题集通道创建任务。</div>`;
   return jobs.map((job) => `
     <button class="job-row" data-job-id="${escapeHtml(job.id)}">
-      <span class="job-main"><span class="job-icon">${icon(job.type === "csv" ? "file" : "grid")}</span><span class="job-copy"><strong>${escapeHtml(jobTitle(job))}</strong><small>${job.type === "session" ? "单 Session 归因" : "批量评测归因"}</small></span></span>
-      <span class="job-meta"><small>当前阶段</small><code>${escapeHtml(job.progress?.label || "等待状态")}</code></span>
-      ${statusBadge(job.status)}
+      <span class="job-main"><span class="job-icon ${job.type.startsWith("feedback") ? "feedback-icon" : ""}">${icon(["csv", "feedback-batch"].includes(job.type) ? "table" : job.type === "feedback" ? "session" : "search")}</span><span class="job-copy"><strong>${escapeHtml(jobTitle(job))}</strong><small>${job.type === "feedback" ? "单条负向反馈" : job.type === "feedback-batch" ? "批量负向反馈" : job.type === "session" ? "单 Session 归因" : "批量评测归因"}</small></span></span>
+      <span class="job-meta"><small>当前阶段</small><code>${escapeHtml(progressLabel(job))}</code></span>
+      ${statusBadge(job.status, job.type)}
       <time>${formatTime(job.createdAt)}</time>
       ${icon("chevron")}
     </button>`).join("");
@@ -114,6 +139,14 @@ function updateDashboard() {
   $("#metric-failed").textContent = failed;
   $("#job-count").textContent = state.jobs.length;
   $("#recent-jobs").innerHTML = jobRows(state.jobs.slice(0, 5));
+  const attention = state.jobs.find((job) => ["failed", "completed_with_failures"].includes(job.status));
+  const active = state.jobs.find((job) => ["queued", "running"].includes(job.status));
+  const focus = active || attention;
+  $("#attention-panel").innerHTML = focus
+    ? `<p class="kicker">${active ? "LIVE / 正在调查" : "REVIEW / 失败记录"}</p><span class="attention-symbol">${icon(active ? "play" : "alert")}</span><h2>${active ? "调查正在进行" : `${failed} 条失败运行记录`}</h2><p>${active ? "任务在后台继续运行。进入任务可查看当前阶段与新增证据。" : "历史复跑也计入此数。先查看诊断和运行链，再决定是否重新执行。"}</p><div class="attention-focus"><span>最近${active ? "运行" : "失败"}任务</span><strong>${escapeHtml(jobTitle(focus))}</strong><small>${escapeHtml(progressLabel(focus))}</small></div><button class="attention-action" data-attention-job="${escapeHtml(focus.id)}">打开任务 ${icon("arrow")}</button>`
+    : `<p class="kicker">STATUS / 工作队列</p><span class="attention-symbol">${icon("check")}</span><h2>当前无需处理</h2><p>新的调查结果或失败诊断会在这里出现。</p><button class="attention-action" data-view="reports">查看已有报告 ${icon("arrow")}</button>`;
+  $("#attention-panel [data-attention-job]")?.addEventListener("click", () => openJob(focus.id, "history"));
+  $("#attention-panel [data-view]")?.addEventListener("click", () => showView("reports"));
   renderHistory();
   renderReports();
   bindJobRows();
@@ -121,19 +154,23 @@ function updateDashboard() {
 
 function renderHistory() {
   const query = $("#history-search")?.value?.trim().toLowerCase() || "";
-  const jobs = state.jobs.filter((job) => !query || JSON.stringify(job.inputSummary).toLowerCase().includes(query) || job.id.toLowerCase().includes(query));
+  const type = $("#history-type").value;
+  const status = $("#history-status").value;
+  const jobs = state.jobs.filter((job) => (!query || JSON.stringify(job.inputSummary).toLowerCase().includes(query) || job.id.toLowerCase().includes(query))
+    && (type === "all" || job.type === type)
+    && (status === "all" || (status === "running" ? ["queued", "running"].includes(job.status) : status === "completed" ? ["completed", "completed_with_evidence_gaps", "completed_no_action"].includes(job.status) : ["failed", "completed_with_failures"].includes(job.status))));
   $("#history-jobs").innerHTML = jobRows(jobs);
 }
 
 function reportRows(jobs) {
-  if (!jobs.length) return `<div class="empty-list"><strong>还没有可查看的批次</strong>创建单 Session 或 CSV 任务后，批次报告会显示在这里。</div>`;
+  if (!jobs.length) return `<div class="empty-list"><strong>还没有可查看的报告</strong>创建负向反馈或离线题集任务后，报告会显示在这里。</div>`;
   return jobs.map((job) => {
     const attempt = Number(job.lineage?.attempt) || 1;
-    const subject = job.type === "session" ? `Session ${job.inputSummary.sessionId || "—"}` : job.inputSummary.fileName || "CSV 批次";
+    const subject = job.type === "feedback" ? `负向反馈 · ${job.inputSummary.sessionId}` : job.type === "feedback-batch" ? feedbackBatchLabel(job) : job.type === "session" ? `Session ${job.inputSummary.sessionId || "—"}` : job.inputSummary.fileName || "CSV 批次";
     return `<button class="job-row report-row" data-job-id="${escapeHtml(job.id)}" data-origin="reports">
-      <span class="job-main"><span class="job-icon">${icon("folder")}</span><span class="job-copy"><strong>批次 ${formatTime(job.createdAt)}</strong><small>${escapeHtml(subject)} · Attempt ${attempt}</small></span></span>
-      <span class="job-meta"><small>报告状态</small><code>${escapeHtml(job.progress?.label || "等待生成")}</code></span>
-      ${statusBadge(job.status)}<time>${formatTime(job.updatedAt || job.createdAt)}</time>${icon("chevron")}
+      <span class="job-main"><span class="job-icon">${icon("folder")}</span><span class="job-copy"><strong>批次 ${formatTime(job.createdAt)}</strong><small>${escapeHtml(subject)} · 第 ${attempt} 次运行</small></span></span>
+      <span class="job-meta"><small>报告状态</small><code>${escapeHtml(progressLabel(job))}</code></span>
+      ${statusBadge(job.status, job.type)}<time>${formatTime(job.updatedAt || job.createdAt)}</time>${icon("chevron")}
     </button>`;
   }).join("");
 }
@@ -161,9 +198,71 @@ function setFormError(target, error) {
 
 function setSubmitting(form, busy) {
   const button = form.querySelector('button[type="submit"]');
+  if (!button.dataset.idleHtml) button.dataset.idleHtml = button.innerHTML;
   button.disabled = busy;
-  button.style.opacity = busy ? ".58" : "";
-  button.textContent = busy ? "正在创建任务…" : form.id === "session-form" ? "开始全链路归因" : "开始批量归因";
+  if (busy) button.textContent = "正在创建任务…";
+  else button.innerHTML = button.dataset.idleHtml;
+}
+
+async function submitFeedback(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const errors = $("#feedback-errors");
+  setFormError(errors, "");
+  const payload = {
+    sessionId: $("#feedback-session-id").value, requestQuery: $("#feedback-query").value,
+    requestIdList: $("#feedback-request-id").value, maxRounds: $("#feedback-max-rounds").value, maxTurns: $("#feedback-max-turns").value,
+    agentId: $("#feedback-agent-id").value, agentType: $("#feedback-agent-type").value,
+    timelineRoot: $("#feedback-timeline-root").value.trim(), traceRoot: $("#feedback-trace-root").value.trim(), fetchMissing: $("#feedback-fetch-missing").checked,
+  };
+  if (!/^\d+$/.test(payload.sessionId.trim())) return setFormError(errors, "Session ID 必须为数字");
+  if (!payload.requestQuery.trim()) return setFormError(errors, "请粘贴用户负向反馈原文");
+  try {
+    setSubmitting(form, true);
+    const { job } = await api("/api/jobs/feedback", { method: "POST", body: JSON.stringify(payload) });
+    toast("反馈分析已启动，可在这里查看进度与报告");
+    await loadJobs(); await openJob(job.id);
+  } catch (error) { setFormError(errors, error.message); }
+  finally { setSubmitting(form, false); }
+}
+
+async function submitFeedbackBatch(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const errors = $("#feedback-batch-errors");
+  setFormError(errors, "");
+  const sourceDir = $("#feedback-batch-source-dir").value.trim();
+  if (!sourceDir && !state.feedbackBatchFile) return setFormError(errors, "请填写五类文件目录或选择反馈 CSV");
+  if (sourceDir && state.feedbackBatchFile) return setFormError(errors, "目录和 CSV 只能选择一种输入方式");
+  try {
+    setSubmitting(form, true);
+    const csvText = state.feedbackBatchFile ? await state.feedbackBatchFile.text() : undefined;
+    const { job } = await api("/api/jobs/feedback-batch", { method: "POST", body: JSON.stringify({
+      sourceDir,
+      fileName: state.feedbackBatchFile?.name,
+      csvText,
+      sessionStart: $("#feedback-batch-session-start").value,
+      sessionCount: $("#feedback-batch-session-count").value,
+      concurrency: $("#feedback-batch-concurrency").value,
+      maxRounds: $("#feedback-batch-max-rounds").value,
+      maxTurns: $("#feedback-batch-max-turns").value,
+    }) });
+    const next = job.inputSummary.nextSessionStart;
+    toast(`已创建 ${job.inputSummary.selectedSessions} 个 Session、${job.inputSummary.candidates} 条反馈${next ? `；下一批从序号 ${next} 开始` : ""}`);
+    await loadJobs();
+    await openJob(job.id);
+  } catch (error) { setFormError(errors, error.message); }
+  finally { setSubmitting(form, false); }
+}
+
+function chooseFeedbackBatchCsv(file) {
+  if (!file) return;
+  if (!file.name.toLowerCase().endsWith(".csv")) return setFormError($("#feedback-batch-errors"), "请选择 .csv 文件");
+  if (file.size > 20 * 1024 * 1024) return setFormError($("#feedback-batch-errors"), "CSV 不能超过 20 MB");
+  state.feedbackBatchFile = file;
+  $("#feedback-batch-preview").hidden = false;
+  $("#feedback-batch-preview").innerHTML = `<strong>${escapeHtml(file.name)}</strong> · ${(file.size / 1024).toFixed(1)} KB`;
+  setFormError($("#feedback-batch-errors"), "");
 }
 
 async function submitSession(event) {
@@ -314,6 +413,7 @@ function renderBatchSessionOverview(job) {
     ["all", "非满分题", totalRows], ["queued", "等待处理", count("queued")], ["running", "运行中", count("running")],
     ["completed", "已完成", count("completed")], ["completed_with_evidence_gaps", "Trace有缺口", count("completed_with_evidence_gaps")], ["failed", "失败", count("failed")],
     ["source_run_failed", "源任务未运行", count("source_run_failed")],
+    ["evaluation_input_issue", "评测输入问题", count("evaluation_input_issue")],
   ].map(([key,label,value]) => `<button class="batch-stat ${state.batchSessionStatus === key ? "active" : ""}" data-batch-status="${key}"><strong>${value}</strong><span>${label}</span></button>`).join("");
   const selectionPanel = $("#batch-session-selection");
   selectionPanel.hidden = !selectionEnabled;
@@ -362,17 +462,38 @@ function renderDetailHeader(job) {
   const progress = Math.max(0, Math.min(100, Number(job.progress?.percent) || 0));
   const canRetryFailed = job.retry?.canRetryFailed;
   const canRetryFull = job.retry?.canRetryFull;
+  const canContinue = job.continuation?.canCreate;
+  const nextJobId = job.continuation?.nextJobId;
+  const previousBatchId = job.batchSeries?.previousJobId;
   const attempt = Number(job.lineage?.attempt) || 1;
-  const attemptMeta = attempt > 1 ? ` · Attempt ${attempt} · ${job.lineage.scope === "failed_only" ? "仅失败项" : job.lineage.scope === "selected_sessions" ? "指定Session" : "完整重跑"}` : " · Attempt 1";
+  const attemptMeta = attempt > 1 ? ` · 第 ${attempt} 次运行 · ${job.lineage.scope === "failed_only" ? "仅失败项" : job.lineage.scope === "selected_sessions" ? "指定Session" : "完整重跑"}` : " · 首次运行";
   $("#detail-header").innerHTML = `
-    <div class="detail-title-row"><div><span class="detail-kicker">${escapeHtml(job.type.toUpperCase())} / ${escapeHtml(job.id)}${escapeHtml(attemptMeta)}</span><h2>${escapeHtml(jobTitle(job))}</h2><p>${escapeHtml(job.error || job.progress?.label || "正在准备运行")}</p></div><div class="detail-actions"><button class="button ghost" id="back-to-history">返回</button>${canRetryFailed ? `<button class="button retry-primary" id="retry-failed">${icon("retry")}仅重跑失败项</button>` : ""}${canRetryFull ? `<button class="button ghost" id="retry-full">完整重跑</button>` : ""}${canCancel ? `<button class="button danger" id="cancel-job">${icon("stop")}停止任务</button>` : ""}</div></div>
+    <div class="detail-title-row"><div><span class="detail-kicker">${escapeHtml(job.type.toUpperCase())} / ${escapeHtml(job.id)}${escapeHtml(attemptMeta)}</span><h2>${escapeHtml(jobTitle(job))}</h2><p>${escapeHtml(job.error || progressLabel(job) || "正在准备运行")}</p></div><div class="detail-actions"><button class="button ghost" id="back-to-history">返回</button>${previousBatchId ? `<button class="button ghost" id="open-previous-feedback-batch">查看上一批</button>` : ""}${canContinue ? `<button class="button retry-primary" id="next-feedback-batch">继续下一批 ${escapeHtml(job.inputSummary.sessionCount)} 个 Session</button>` : ""}${nextJobId ? `<button class="button ghost" id="open-next-feedback-batch">查看下一批</button>` : ""}${canRetryFailed ? `<button class="button retry-primary" id="retry-failed">${icon("retry")}仅重跑失败项</button>` : ""}${canRetryFull ? `<button class="button ghost" id="retry-full">完整重跑</button>` : ""}${canCancel ? `<button class="button danger" id="cancel-job">${icon("stop")}停止任务</button>` : ""}</div></div>
     ${renderAttemptChain(job)}
-    ${job.chainSummary?.total ? `<div class="chain-summary"><span>运行链有效结果</span><strong>${job.chainSummary.completed}/${job.chainSummary.total} 完成</strong><small>${job.chainSummary.failed} 未解决 · ${job.chainSummary.running} 运行中 · ${job.chainSummary.skipped} 跳过${job.chainSummary.sourceRunFailed ? ` · ${job.chainSummary.sourceRunFailed} 源任务未运行` : ""}</small></div>` : ""}
+    ${job.type === "feedback-batch" ? `<div class="chain-summary"><span>第 ${escapeHtml(job.batchSeries?.batchNumber || 1)} 批 · 本批范围</span><strong>从序号 ${escapeHtml(job.inputSummary.sessionStart)} 开始 · ${escapeHtml(job.inputSummary.selectedSessions)} 个 Session · ${escapeHtml(job.inputSummary.candidates)} 条反馈</strong><small>并行线程 ${escapeHtml(job.inputSummary.concurrency)} · ${job.inputSummary.nextSessionStart ? `下一批从序号 ${escapeHtml(job.inputSummary.nextSessionStart)} 开始，沿用本批候选快照，不重复选取 Session` : "已到候选末尾"}</small></div>` : ""}
+    ${job.chainSummary?.total ? `<div class="chain-summary"><span>${job.type === "feedback" ? "任务执行结果" : "运行链有效结果"}</span><strong>${job.chainSummary.completed}/${job.chainSummary.total} ${job.type === "feedback" ? "报告已生成" : "完成"}</strong><small>${job.chainSummary.failed} ${job.type === "feedback" ? "运行失败" : "未解决"} · ${job.chainSummary.running} 运行中 · ${job.chainSummary.skipped} 跳过${job.chainSummary.evaluationInputIssues ? ` · ${job.chainSummary.evaluationInputIssues} 评测输入问题` : ""}${job.chainSummary.sourceRunFailed ? ` · ${job.chainSummary.sourceRunFailed} 源任务未运行` : ""}</small></div>` : ""}
     ${renderFailureDiagnosis(job)}
-    <div class="progress-wrap"><progress class="progress-track ${canCancel ? "is-active" : ""}" max="100" value="${progress}" aria-label="任务进度：${progress}%">${progress}%</progress><span class="progress-value">${progress}%</span><span class="progress-label">${statusBadge(job.status)} · ${escapeHtml(job.progress?.label || "等待状态")}</span></div>`;
+    <div class="progress-wrap"><progress class="progress-track ${canCancel ? "is-active" : ""}" max="100" value="${progress}" aria-label="任务进度：${progress}%">${progress}%</progress><span class="progress-value">${progress}%</span><span class="progress-label">${statusBadge(job.status, job.type)} · ${escapeHtml(progressLabel(job))}</span></div>`;
   $("#back-to-history").addEventListener("click", () => { showView(state.detailReturnView || "reports"); loadJobs(); });
   $("#retry-failed")?.addEventListener("click", () => openRetryDialog(job, "failed_only"));
   $("#retry-full")?.addEventListener("click", () => openRetryDialog(job, "full"));
+  $("#open-previous-feedback-batch")?.addEventListener("click", () => openJob(previousBatchId));
+  $("#open-next-feedback-batch")?.addEventListener("click", () => openJob(nextJobId));
+  $("#next-feedback-batch")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    button.textContent = "正在创建下一批…";
+    try {
+      const { job: next } = await api(`/api/jobs/${job.id}/next-feedback-batch`, { method: "POST", body: "{}" });
+      toast(`第 ${next.batchSeries.batchNumber} 批已创建：${next.inputSummary.selectedSessions} 个 Session`);
+      await loadJobs();
+      await openJob(next.id);
+    } catch (error) {
+      toast(error.message);
+      button.disabled = false;
+      button.textContent = `继续下一批 ${job.inputSummary.sessionCount} 个 Session`;
+    }
+  });
   $$('[data-related-job]').forEach((button) => button.addEventListener("click", () => openJob(button.dataset.relatedJob)));
   $("#cancel-job")?.addEventListener("click", async () => {
     if (!confirm("确定停止这个任务吗？已生成的日志和Checkpoint会保留。")) return;
@@ -390,17 +511,20 @@ function openRetryDialog(job, scope) {
   const selectedSessions = (job.retry?.selectableSessions || []).filter((item) => state.selectedBatchSessions.has(item.retryKey));
   $("#retry-dialog-title").textContent = scope === "failed_only" ? "仅重跑失败项" : scope === "selected_sessions" ? "重跑指定 Session" : "完整重跑任务";
   $("#retry-dialog-description").textContent = scope === "failed_only"
-    ? `将创建新的 Attempt，仅执行 ${failures.length} 个失败项。成功项、旧日志和失败摘要全部保留。`
+    ? `将创建新一次运行，仅执行 ${failures.length} 个失败项。成功项、旧日志和失败摘要全部保留。`
     : scope === "selected_sessions"
-      ? `将创建新的 Attempt，重跑已选择的 ${selectedSessions.length} 个 Session，以及这些 CSV 行中的全部未命中 GT。旧报告保持不变。`
-    : "将复制原始输入并创建新的 Attempt，重新执行整个任务。旧任务不会被修改。";
+      ? `将创建新一次运行，重跑已选择的 ${selectedSessions.length} 个 Session，以及这些 CSV 行中的全部未命中 GT。旧报告保持不变。`
+    : "将复制原始输入并创建新一次运行，重新执行整个任务。旧任务不会被修改。";
   $("#retry-selection-preview").innerHTML = scope === "failed_only"
     ? failures.map((item) => `<label class="retry-item"><input type="checkbox" name="retry-item" value="${escapeHtml(item.retryKey)}" checked><span><strong>${escapeHtml(item.sessionId || "未知Session")}</strong><b>${escapeHtml(item.criterionId || item.stage || "准备阶段")}</b><small>${escapeHtml(item.error || "失败")}</small></span></label>`).join("")
     : scope === "selected_sessions"
       ? selectedSessions.map((item) => `<div><strong>Session ${escapeHtml(item.sessionId)}</strong><span>${escapeHtml(item.rowNumbers?.length ? `CSV 行 ${item.rowNumbers.join("、")}` : "按Session匹配")}</span><small>重跑该 Session 所选 CSV 行的全部未命中 GT</small></div>`).join("")
-    : `<div><strong>全部输入</strong><span>${job.type === "csv" ? "整个CSV批次" : `Session ${escapeHtml(job.inputSummary.sessionId)}`}</span><small>重新执行拉取检查、准备和全部GT归因；完整Trace仍优先复用缓存。</small></div>`;
+    : `<div><strong>全部输入</strong><span>${job.type === "csv" ? "整个CSV批次" : job.type === "feedback-batch" ? `${escapeHtml(job.inputSummary.selectedSessions)} 个 Session 的反馈批次` : `Session ${escapeHtml(job.inputSummary.sessionId)}`}</span><small>重新执行本批次的调查，已有输入快照和旧报告保留。</small></div>`;
   $("#retry-max-rounds").value = job.inputSummary?.maxRounds || 20;
-  $("#retry-concurrency-field").hidden = job.type !== "csv";
+  $("#retry-concurrency-field").hidden = !["csv", "feedback-batch"].includes(job.type);
+  $("#retry-concurrency-field small").textContent = job.type === "feedback-batch"
+    ? "不同 Session 并行；同一 Session 的反馈仍按顺序处理。"
+    : "不同 Session 并行；同一 Session 的多个 GT 仍按顺序执行。";
   $("#retry-concurrency").value = job.inputSummary?.concurrency || 1;
   $("#retry-reason").value = "";
   setFormError($("#retry-errors"), "");
@@ -415,14 +539,14 @@ async function submitRetry(event) {
   setFormError(errorBox, "");
   const submit = $("#retry-submit");
   submit.disabled = true;
-  submit.textContent = "正在创建 Attempt…";
+  submit.textContent = "正在创建任务…";
   try {
     const { job: retryJob } = await api(`/api/jobs/${job.id}/retry`, {
       method: "POST",
       body: JSON.stringify({
         scope: state.retryScope,
         maxRounds: $("#retry-max-rounds").value,
-        concurrency: job.type === "csv" ? $("#retry-concurrency").value : undefined,
+        concurrency: ["csv", "feedback-batch"].includes(job.type) ? $("#retry-concurrency").value : undefined,
         mode: job.inputSummary?.mode || "live",
         reason: $("#retry-reason").value,
         selectedFailureKeys: state.retryScope === "failed_only" ? $$('input[name="retry-item"]:checked').map((item) => item.value) : undefined,
@@ -430,14 +554,15 @@ async function submitRetry(event) {
       }),
     });
     $("#retry-dialog").close();
-    toast(`Attempt ${retryJob.lineage?.attempt || ""} 已创建，旧任务保持不变`);
+    toast(`第 ${retryJob.lineage?.attempt || ""} 次运行已创建，旧任务保持不变`);
     await loadJobs();
     await openJob(retryJob.id);
   } catch (error) { setFormError(errorBox, error.message); }
-  finally { submit.disabled = false; submit.textContent = "创建新 Attempt"; }
+  finally { submit.disabled = false; submit.textContent = "创建新一次运行"; }
 }
 
 function preferredArtifact(job, artifacts) {
+  if (job.type === "feedback") return artifacts.find((item) => item.name === "feedback-report.md") || artifacts.find((item) => item.name === "web-failure-summary.md") || artifacts.find((item) => item.name === "agent-run.md") || artifacts[0];
   const hasFailures = ["failed", "completed_with_failures"].includes(job.status);
   if (hasFailures) return artifacts.find((item) => item.name === "failure-summary.md") || artifacts.find((item) => item.name === "web-failure-summary.md") || artifacts.find((item) => item.name === "rca-report.md") || artifacts.find((item) => item.name === "agent-run-summary.md") || artifacts[0];
   return artifacts.find((item) => item.name === "rca-report.md") || artifacts.find((item) => item.name === "workflow-summary.md") || artifacts.find((item) => item.name === "agent-run-summary.md") || artifacts.find((item) => item.name === "agent-run.md") || artifacts[0];
@@ -445,6 +570,10 @@ function preferredArtifact(job, artifacts) {
 
 function artifactShortLabel(item) {
   return ({
+    "feedback-report.md": "反馈分析报告",
+    "feedback-result.json": "结构化结果",
+    "evidence-ledger.json": "证据索引",
+    "episode-manifest.json": "调查范围",
     "rca-report.md": "RCA 报告",
     "failure-summary.md": "失败摘要",
     "agent-run-summary.md": "执行摘要",
@@ -458,35 +587,38 @@ function artifactShortLabel(item) {
 }
 
 function renderArtifactTabs(job, artifacts = []) {
-  const importantNames = new Set(["web-failure-summary.md", "web-job.jsonl", "rca-report.md", "failure-summary.md", "agent-run-summary.md", "agent-run.md", "validation.json", "case.json", "workflow-summary.md"]);
-  const important = artifacts.filter((item) => importantNames.has(item.name));
+  const importantNames = new Set(["feedback-report.md", "feedback-result.json", "evidence-ledger.json", "episode-manifest.json", "web-failure-summary.md", "web-job.jsonl", "rca-report.md", "failure-summary.md", "agent-run-summary.md", "agent-run.md", "validation.json", "case.json", "workflow-summary.md"]);
+  const order = ["feedback-report.md", "rca-report.md", "web-failure-summary.md", "failure-summary.md", "validation.json", "feedback-result.json", "case.json", "evidence-ledger.json", "episode-manifest.json", "agent-run-summary.md", "agent-run.md", "workflow-summary.md", "web-job.jsonl"];
+  const important = artifacts.filter((item) => importantNames.has(item.name)).sort((a, b) => order.indexOf(a.name) - order.indexOf(b.name));
   $("#artifact-tabs").innerHTML = important.length
     ? important.map((item) => `<button class="artifact-tab ${state.activeArtifact === item.path ? "active" : ""}" data-artifact="${escapeHtml(item.path)}">${escapeHtml(artifactShortLabel(item))}</button>`).join("")
-    : `<span class="progress-label">当前 GT 暂无可展示产物</span>`;
+    : `<span class="progress-label">当前${job.type === "feedback-batch" ? "反馈" : " GT"}暂无可展示产物</span>`;
   $$('[data-artifact]').forEach((tab) => tab.addEventListener("click", () => loadArtifact(job.id, tab.dataset.artifact)));
   return important;
 }
 
-function renderSessionState(session) {
+function renderSessionState(session, feedbackBatch = false) {
   const issue = session?.issue;
   const row = sessionRowLabel(session || {});
   if (issue) {
     const source = issue.kind === "source_run_failed";
-    const title = source ? "上游评测无有效产物" : "Session 处理失败";
-    const tone = source ? "source" : "failure";
+    const evaluation = issue.kind === "evaluation_input_issue";
+    const upstream = source || evaluation;
+    const title = evaluation ? "评测输入问题" : source ? "上游评测无有效产物" : "Session 处理失败";
+    const tone = upstream ? "source" : "failure";
     $("#report-context").innerHTML = `<nav class="breadcrumbs" aria-label="当前位置"><span>${escapeHtml(sessionLabel(session))}</span><svg><use href="#i-chevron"/></svg><strong>${escapeHtml(row)}</strong></nav><div class="report-context-title"><div><p class="kicker">SESSION STATUS · ${escapeHtml(row)}</p><h2>${title}</h2></div>${statusBadge(session.status)}</div>`;
-    $("#artifact-tabs").innerHTML = `<span class="progress-label">当前 Session 没有 RCA 报告</span>`;
+    $("#artifact-tabs").innerHTML = `<span class="progress-label">当前 Session 没有${feedbackBatch ? "反馈分析" : " RCA"}报告</span>`;
     $("#artifact-content").innerHTML = `<section class="session-diagnostic ${tone}">
-      <div class="session-diagnostic-title"><span>${icon(source ? "session" : "stop")}</span><div><small>${escapeHtml(stageNames[issue.stage] || issue.stage || "未知阶段")}${issue.code ? ` · ${escapeHtml(issue.code)}` : ""}</small><h3>${escapeHtml(issue.label || title)}</h3></div></div>
-      <dl><div><dt>CSV位置</dt><dd>${escapeHtml(row)}</dd></div><div><dt>失败阶段</dt><dd>${escapeHtml(stageNames[issue.stage] || issue.stage || "未知阶段")}</dd></div>${issue.code ? `<div><dt>错误码</dt><dd><code>${escapeHtml(issue.code)}</code></dd></div>` : ""}</dl>
-      <div class="session-diagnostic-block"><strong>${source ? "缺失条件" : "失败原因"}</strong><p>${escapeHtml(issue.detail || "没有可用的错误详情。")}</p></div>
-      <div class="session-diagnostic-block advice"><strong>处理建议</strong><p>${escapeHtml(issue.remediation || "修复后仅重跑该Session。")}</p></div>
+      <div class="session-diagnostic-title"><span>${icon(upstream ? "session" : "stop")}</span><div><small>${escapeHtml(stageNames[issue.stage] || issue.stage || "未知阶段")}${issue.code ? ` · ${escapeHtml(issue.code)}` : ""}</small><h3>${escapeHtml(issue.label || title)}</h3></div></div>
+      <dl><div><dt>CSV位置</dt><dd>${escapeHtml(row)}</dd></div><div><dt>${upstream ? "检查阶段" : "失败阶段"}</dt><dd>${escapeHtml(stageNames[issue.stage] || issue.stage || "未知阶段")}</dd></div>${issue.code ? `<div><dt>状态码</dt><dd><code>${escapeHtml(issue.code)}</code></dd></div>` : ""}</dl>
+      <div class="session-diagnostic-block"><strong>${upstream ? "具体问题" : "失败原因"}</strong><p>${escapeHtml(issue.detail || "没有可用的问题详情。")}</p></div>
+      <div class="session-diagnostic-block advice"><strong>处理建议</strong><p>${escapeHtml(issue.remediation || (feedbackBatch ? "检查输入与证据后重新提交该批次。" : "修复后仅重跑该Session。"))}</p></div>
     </section>`;
     return [];
   }
   $("#report-context").innerHTML = `<nav class="breadcrumbs" aria-label="当前位置"><span>${escapeHtml(sessionLabel(session))}</span><svg><use href="#i-chevron"/></svg><strong>${escapeHtml(row)}</strong></nav><div class="report-context-title"><div><p class="kicker">SESSION STATUS · ${escapeHtml(row)}</p><h2>等待处理</h2></div>${statusBadge(session?.status || "queued")}</div>`;
-  $("#artifact-tabs").innerHTML = `<span class="progress-label">尚未进入 ORIGO 分析</span>`;
-  $("#artifact-content").innerHTML = `<div class="empty-state">${icon("session")}<h3>等待调度</h3><p>${escapeHtml(row)} 已进入本批次执行计划，开始处理后将在这里显示GT、日志和报告。</p></div>`;
+  $("#artifact-tabs").innerHTML = `<span class="progress-label">尚未进入 TraceLens 分析</span>`;
+  $("#artifact-content").innerHTML = `<div class="empty-state">${icon("session")}<h3>等待调度</h3><p>${escapeHtml(row)} 已进入本批次执行计划，开始处理后将在这里显示${feedbackBatch ? "反馈分析" : " GT"}、日志和报告。</p></div>`;
   return [];
 }
 
@@ -503,17 +635,21 @@ function findReportSelection(job) {
 }
 
 function renderReportWorkspace(job) {
+  if (job.type === "feedback") return renderFeedbackWorkspace(job);
+  const feedbackBatch = job.type === "feedback-batch";
+  $("#report-tree-navigation").setAttribute("aria-label", feedbackBatch ? "Session 与反馈" : "Session 与 GT");
+  $("#artifact-tabs").setAttribute("aria-label", feedbackBatch ? "反馈分析产物" : "GT 产物");
   const { tree, session, criterion } = findReportSelection(job);
-  $("#report-tree-header").innerHTML = `<p class="kicker">REPORT DIRECTORY</p><h2>批次报告</h2><p>${formatTime(tree.batch?.createdAt || job.createdAt)} · ${tree.counts?.startedRows ?? tree.counts?.sessions ?? 0}/${tree.counts?.nonFullScoreRows ?? tree.counts?.sessions ?? 0} 已进入处理 · ${tree.counts?.criteria || 0} GT</p>`;
+  $("#report-tree-header").innerHTML = `<p class="kicker">${feedbackBatch ? "FEEDBACK BATCH" : "REPORT DIRECTORY"}</p><h2>${feedbackBatch ? "反馈批次" : "批次报告"}</h2><p>${formatTime(tree.batch?.createdAt || job.createdAt)} · ${tree.counts?.startedRows ?? tree.counts?.sessions ?? 0}/${tree.counts?.nonFullScoreRows ?? tree.counts?.sessions ?? 0} 已进入处理 · ${tree.counts?.criteria || 0} ${feedbackBatch ? "条反馈" : "GT"}</p>`;
   $("#report-tree-navigation").innerHTML = tree.sessions.length ? tree.sessions.map((entry) => {
     const expanded = entry.key === session?.key;
     return `<section class="session-node ${expanded ? "active" : ""}">
       <button class="session-button" data-session-key="${escapeHtml(entry.key)}" aria-expanded="${expanded}">
-        <span class="session-node-icon">${icon("session")}</span><span><strong>${entry.sessionId ? `Session ${escapeHtml(entry.sessionId)}` : `CSV 行 ${escapeHtml(entry.rowNumbers?.[0] || entry.key)}`}</strong><small>${escapeHtml(sessionRowLabel(entry))} · ${entry.issue ? "源任务没有可归因结果" : `${entry.counts.criteria} 个 GT · ${entry.counts.completed} 完成 · ${entry.counts.failed} 失败`}</small></span>${statusBadge(entry.status)}${icon("chevron")}
+        <span class="session-node-icon">${icon("session")}</span><span><strong>${entry.sessionId ? `Session ${escapeHtml(entry.sessionId)}` : `CSV 行 ${escapeHtml(entry.rowNumbers?.[0] || entry.key)}`}</strong><small>${escapeHtml(sessionRowLabel(entry))} · ${entry.issue ? escapeHtml(entry.issue.label || "没有可归因结果") : `${entry.counts.criteria} ${feedbackBatch ? "条反馈" : "个 GT"} · ${entry.counts.completed} 完成 · ${entry.counts.failed} 失败`}</small></span>${statusBadge(entry.status)}${icon("chevron")}
       </button>
-      <div class="criterion-list" ${expanded ? "" : "hidden"}>${entry.criteria.length ? entry.criteria.map((gt) => `<button class="criterion-button ${gt.key === criterion?.key ? "active" : ""}" data-session-key="${escapeHtml(entry.key)}" data-criterion-key="${escapeHtml(gt.key)}" aria-current="${gt.key === criterion?.key ? "page" : "false"}"><span class="criterion-marker"></span><span><strong>${escapeHtml(gt.criterionId)}</strong><small>${escapeHtml(stageNames[gt.stage] || gt.stage || (gt.status === "completed" ? "报告已生成" : "等待产物"))}</small></span>${statusBadge(gt.status)}</button>`).join("") : entry.issue ? `<div class="source-run-state" role="status"><strong>${escapeHtml(entry.issue.label || "源任务未成功运行")}</strong><p>${escapeHtml(entry.issue.detail || "没有可用于Trace归因的Session和评测结果。")}</p></div>` : `<p class="tree-empty">暂无 GT 归因项</p>`}</div>
+      <div class="criterion-list" ${expanded ? "" : "hidden"}>${entry.criteria.length ? entry.criteria.map((gt) => `<button class="criterion-button ${gt.key === criterion?.key ? "active" : ""}" data-session-key="${escapeHtml(entry.key)}" data-criterion-key="${escapeHtml(gt.key)}" aria-current="${gt.key === criterion?.key ? "page" : "false"}"><span class="criterion-marker"></span><span><strong>${feedbackBatch ? `第 ${escapeHtml(gt.rowNumber)} 行反馈` : escapeHtml(gt.criterionId)}</strong><small>${escapeHtml(stageNames[gt.stage] || gt.stage || (gt.status === "completed" ? "报告已生成" : "等待产物"))}</small></span>${statusBadge(gt.status)}</button>`).join("") : entry.issue ? `<div class="source-run-state" role="status"><strong>${escapeHtml(entry.issue.label || "源任务未成功运行")}</strong><p>${escapeHtml(entry.issue.detail || "没有可用于Trace归因的Session和评测结果。")}</p></div>` : `<p class="tree-empty">${feedbackBatch ? "暂无反馈分析项" : "暂无 GT 归因项"}</p>`}</div>
     </section>`;
-  }).join("") : `<div class="tree-empty"><strong>等待 Session</strong><p>Trace 拉取并解析评分后会显示 Session 与 GT。</p></div>`;
+  }).join("") : `<div class="tree-empty"><strong>等待 Session</strong><p>${feedbackBatch ? "批次启动后会显示反馈分析项。" : "Trace 拉取并解析评分后会显示 Session 与 GT。"}</p></div>`;
   $$('[data-session-key]').filter((button) => !button.dataset.criterionKey).forEach((button) => button.addEventListener("click", () => {
     state.activeSessionKey = button.dataset.sessionKey;
     state.activeCriterionKey = null;
@@ -549,14 +685,33 @@ function renderReportWorkspace(job) {
     const evidenceWarning = criterion.status === "completed_with_evidence_gaps"
       ? `<p class="evidence-gap-warning" role="status">本报告基于可见Trace完成，但存在局部Tool输出缺口；请在“Trace完整性与证据边界”中查看具体Span、字段和补拉错误。</p>`
       : "";
-    $("#report-context").innerHTML = `<nav class="breadcrumbs" aria-label="当前位置"><span>批次 ${formatTime(tree.batch.createdAt)}</span><svg><use href="#i-chevron"/></svg><span>Session ${escapeHtml(session.sessionId || session.key)}</span><svg><use href="#i-chevron"/></svg><span>${escapeHtml(sessionRowLabel(session))}</span><svg><use href="#i-chevron"/></svg><strong>${escapeHtml(criterion.criterionId)}</strong></nav><div class="report-context-title"><div><p class="kicker">GT ROOT CAUSE REPORT · ${escapeHtml(sessionRowLabel(session))}</p><h2>${escapeHtml(criterion.criterionId)}</h2></div>${statusBadge(criterion.status)}</div>${evidenceWarning}${criterion.error ? `<p class="criterion-error" role="alert">${escapeHtml(criterion.error)}</p>` : ""}`;
+    $("#report-context").innerHTML = `<nav class="breadcrumbs" aria-label="当前位置"><span>批次 ${formatTime(tree.batch.createdAt)}</span><svg><use href="#i-chevron"/></svg><span>Session ${escapeHtml(session.sessionId || session.key)}</span><svg><use href="#i-chevron"/></svg><span>${escapeHtml(sessionRowLabel(session))}</span><svg><use href="#i-chevron"/></svg><strong>${feedbackBatch ? "负向反馈" : escapeHtml(criterion.criterionId)}</strong></nav><div class="report-context-title"><div><p class="kicker">${feedbackBatch ? "FEEDBACK REPORT" : "GT ROOT CAUSE REPORT"} · ${escapeHtml(sessionRowLabel(session))}</p><h2>${feedbackBatch ? "负向反馈分析" : escapeHtml(criterion.criterionId)}</h2></div>${statusBadge(criterion.status)}</div>${evidenceWarning}${criterion.error ? `<p class="criterion-error" role="alert">${escapeHtml(criterion.error)}</p>` : ""}`;
     return renderArtifactTabs(job, criterion.artifacts);
   }
-  if (session && state.activeCriterionKey !== "__batch__") return renderSessionState(session);
+  if (session && state.activeCriterionKey !== "__batch__") return renderSessionState(session, feedbackBatch);
   $("#report-context").innerHTML = state.activeCriterionKey === "__batch__"
     ? `<nav class="breadcrumbs" aria-label="当前位置"><span>批次 ${formatTime(tree.batch?.createdAt)}</span><svg><use href="#i-chevron"/></svg><strong>批次级文件</strong></nav><h2>批次运行与汇总</h2>`
     : `<nav class="breadcrumbs" aria-label="当前位置"><span>批次 ${formatTime(tree.batch?.createdAt)}</span></nav><h2>等待报告目录</h2>`;
   return state.activeCriterionKey === "__batch__" ? renderArtifactTabs(job, tree.globalArtifacts || []) : [];
+}
+
+function renderFeedbackWorkspace(job) {
+  $("#report-tree-navigation").setAttribute("aria-label", "反馈分析文件");
+  $("#artifact-tabs").setAttribute("aria-label", "反馈分析产物");
+  $("#report-tree-header").innerHTML = `<p class="kicker">FEEDBACK INVESTIGATION</p><h2>反馈分析</h2><p>Session ${escapeHtml(job.inputSummary.sessionId)} · ${formatTime(job.createdAt)}</p>`;
+  const artifacts = (job.artifacts || []).filter((a) => !a.path.startsWith("input/") && !a.path.includes("/source/"));
+  const groups = [["结论与核验", ["feedback-report.md", "feedback-result.json", "validation.json"]], ["执行与证据", ["agent-run.md", "evidence-ledger.json", "episode-manifest.json", "web-job.jsonl", "web-failure-summary.md"]]];
+  $("#report-tree-navigation").innerHTML = groups.map(([title, names]) => `<div class="feedback-file-group"><strong>${title}</strong>${names.map(name => {
+    const artifact = artifacts.find(a => a.name === name);
+    return artifact ? `<button class="feedback-file ${state.activeArtifact === artifact.path ? "active" : ""}" data-feedback-artifact="${escapeHtml(artifact.path)}">${icon("file")}<span>${escapeHtml(artifactShortLabel(artifact))}</span></button>` : "";
+  }).join("")}</div>`).join("");
+  $$('[data-feedback-artifact]').forEach(button => button.addEventListener("click", () => {
+    loadArtifact(job.id, button.dataset.feedbackArtifact);
+    $$("[data-feedback-artifact]").forEach(b => b.classList.toggle("active", b === button));
+  }));
+  $("#batch-artifacts").innerHTML = "";
+  $("#report-context").innerHTML = `<nav class="breadcrumbs" aria-label="当前位置"><span>负向反馈</span>${icon("chevron")}<span>Session ${escapeHtml(job.inputSummary.sessionId)}</span></nav><div class="report-context-title"><div><p class="kicker">ANALYSIS & EVIDENCE</p><h2>反馈调查与执行证据</h2></div></div>`;
+  return renderArtifactTabs(job, artifacts);
 }
 
 function simpleMarkdown(source) {
@@ -601,10 +756,16 @@ function inlineMarkdown(value) {
 
 async function loadArtifact(jobId, artifactPath) {
   state.activeArtifact = artifactPath;
+  state.artifactContent = null;
+  $("#artifact-actions").hidden = true;
   $$("[data-artifact]").forEach((tab) => tab.classList.toggle("active", tab.dataset.artifact === artifactPath));
   $("#artifact-content").innerHTML = `<div class="empty-state"><h3>正在读取产物…</h3></div>`;
   try {
     const { content } = await api(`/api/jobs/${jobId}/artifact?path=${encodeURIComponent(artifactPath)}`);
+    if (state.activeJobId !== jobId || state.activeArtifact !== artifactPath) return;
+    state.artifactContent = content;
+    $("#artifact-actions").hidden = false;
+    $("#artifact-filename").textContent = artifactPath.split("/").at(-1);
     if (artifactPath.endsWith(".md")) $("#artifact-content").innerHTML = `<div class="markdown-view">${simpleMarkdown(content)}</div>`;
     else $("#artifact-content").innerHTML = `<pre>${escapeHtml(content)}</pre>`;
   } catch (error) { $("#artifact-content").innerHTML = `<div class="form-errors">${escapeHtml(error.message)}</div>`; }
@@ -623,7 +784,8 @@ async function refreshJob() {
     const important = renderReportWorkspace(job);
     const selectedExists = important.some((item) => item.path === state.activeArtifact);
     const becameFailure = ["failed", "completed_with_failures"].includes(job.status) && !["failed", "completed_with_failures"].includes(state.activeJobStatus);
-    if (!selectedExists || becameFailure) {
+    const feedbackCompleted = job.type === "feedback" && !["queued", "running"].includes(job.status) && ["queued", "running"].includes(state.activeJobStatus);
+    if (!selectedExists || becameFailure || feedbackCompleted) {
       const { criterion, tree, session } = findReportSelection(job);
       const preferred = criterion?.preferredArtifact || preferredArtifact(job, important)
         || (state.activeCriterionKey === "__batch__" || !session ? preferredArtifact(job, tree.globalArtifacts || []) : null);
@@ -641,6 +803,8 @@ async function refreshJob() {
 async function openJob(id, origin = "reports") {
   state.activeJobId = id;
   state.activeArtifact = null;
+  state.artifactContent = null;
+  $("#artifact-actions").hidden = true;
   state.activeSessionKey = null;
   state.activeCriterionKey = null;
   state.batchSessionQuery = "";
@@ -649,17 +813,45 @@ async function openJob(id, origin = "reports") {
   state.activeJobStatus = null;
   state.detailReturnView = origin;
   showView("detail");
+  if (location.hash !== `#job/${id}`) history.pushState(null, "", `#job/${id}`);
   state.activeJobId = id;
   await refreshJob();
   clearInterval(state.poll);
-  state.poll = setInterval(refreshJob, 1800);
+  if (["queued", "running"].includes(state.activeJobStatus)) state.poll = setInterval(refreshJob, 1800);
 }
 
 async function initialize() {
   $$("[data-view]").forEach((button) => button.addEventListener("click", () => showView(button.dataset.view)));
+  $("#new-investigation").addEventListener("click", () => {
+    $(".entry-heading").scrollIntoView({ behavior: "smooth", block: "start" });
+  });
+  $$("[data-history-filter]").forEach((button) => button.addEventListener("click", () => {
+    $("#history-status").value = button.dataset.historyFilter;
+    $("#history-type").value = "all";
+    $("#history-search").value = "";
+    renderHistory();
+    bindJobRows();
+    showView("history");
+  }));
   $("#session-form").addEventListener("submit", submitSession);
   $("#csv-form").addEventListener("submit", submitCsv);
+  $("#feedback-form").addEventListener("submit", submitFeedback);
+  $("#feedback-batch-form").addEventListener("submit", submitFeedbackBatch);
+  $("#copy-artifact").addEventListener("click", async () => {
+    if (state.artifactContent === null) return;
+    try { await navigator.clipboard.writeText(state.artifactContent); toast("内容已复制"); }
+    catch { toast("浏览器未允许复制，请使用下载文件"); }
+  });
+  $("#download-artifact").addEventListener("click", () => {
+    if (state.artifactContent === null) return;
+    const url = URL.createObjectURL(new Blob([state.artifactContent], { type: "text/plain;charset=utf-8" }));
+    const link = document.createElement("a"); link.href = url; link.download = state.activeArtifact.split("/").at(-1); link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  });
+  for (const id of ["history-type", "history-status"]) $("#" + id).addEventListener("change", () => { renderHistory(); bindJobRows(); });
+  $("#refresh-jobs").addEventListener("click", () => loadJobs().catch(e => toast(e.message)));
   $("#csv-file").addEventListener("change", (event) => chooseCsv(event.target.files[0]));
+  $("#feedback-batch-file").addEventListener("change", (event) => chooseFeedbackBatchCsv(event.target.files[0]));
   $("#retry-form").addEventListener("submit", submitRetry);
   $("#retry-cancel").addEventListener("click", () => $("#retry-dialog").close());
   $("#fail-fast").addEventListener("change", (event) => {
@@ -697,6 +889,10 @@ async function initialize() {
   ["dragenter", "dragover"].forEach((name) => drop.addEventListener(name, (event) => { event.preventDefault(); drop.classList.add("dragging"); }));
   ["dragleave", "drop"].forEach((name) => drop.addEventListener(name, (event) => { event.preventDefault(); drop.classList.remove("dragging"); }));
   drop.addEventListener("drop", (event) => chooseCsv(event.dataTransfer.files[0]));
+  const feedbackDrop = $("#feedback-drop-zone");
+  ["dragenter", "dragover"].forEach((name) => feedbackDrop.addEventListener(name, (event) => { event.preventDefault(); feedbackDrop.classList.add("dragging"); }));
+  ["dragleave", "drop"].forEach((name) => feedbackDrop.addEventListener(name, (event) => { event.preventDefault(); feedbackDrop.classList.remove("dragging"); }));
+  feedbackDrop.addEventListener("drop", (event) => chooseFeedbackBatchCsv(event.dataTransfer.files[0]));
 
   try {
     const health = await api("/api/health");
@@ -706,6 +902,14 @@ async function initialize() {
       : "服务异常";
   } catch { $("#health-title").textContent = "无法连接服务"; }
   try { await loadJobs(); } catch (error) { toast(error.message); }
+  const route = () => {
+    const hash = location.hash.slice(1);
+    if (/^job\/job-[A-Za-z0-9-]+$/.test(hash)) openJob(hash.slice(4));
+    else showView(titles[hash] ? hash : "workspace");
+  };
+  window.addEventListener("popstate", route);
+  route();
+  setInterval(() => { if (!state.activeJobId) loadJobs().catch(() => {}); }, 6000);
 }
 
 initialize();

@@ -9,16 +9,19 @@ import { PiJsonAgent } from "./pi-json-agent.mjs";
 import { OfflineSimulationAgent } from "./offline-simulation-agent.mjs";
 import { RCA_SYSTEM_PROMPT, finalReportPrompt, investigationPrompt } from "./prompts.mjs";
 import { RunLogger } from "./run-logger.mjs";
-import { scoringGapPrompt, validateScoringGapTarget } from "./scoring-gap.mjs";
+import { locateAnswerQuote, scoringGapPrompt, validateScoringGapTarget } from "./scoring-gap.mjs";
 import { TraceRepository, traceText } from "./trace-repository.mjs";
 import { executeTraceTool, normalizeAction } from "./trace-tools.mjs";
-import { renderReportMarkdown } from "./report-renderer.mjs";
+import { buildKeyExecutionEvidence, renderReportMarkdown } from "./report-renderer.mjs";
+import { validateReportOpening } from "./report-template.mjs";
 import { validateReportEvidenceConsistency } from "./report-consistency-validator.mjs";
 import { renderRunSummary } from "./run-summary.mjs";
 import { renderFailureSummary } from "./failure-summary.mjs";
 import { buildWithinPromptBudget } from "./context-budget.mjs";
+import { mergeHypotheses, validateCausalClosure } from "./causal-closure.mjs";
 import {
   actionSubjectKey,
+  closeCoverageAsUnobservable,
   coverageSignature,
   updateStallCount,
   workingState,
@@ -33,6 +36,148 @@ function validateDecision(decision) {
   if (!Array.isArray(decision.actions)) throw new Error("decision.actions must be an array");
   if (decision.actions.length > 3) throw new Error("at most 3 actions are allowed per round");
   return decision;
+}
+
+function reportEvidenceIds(report) {
+  const ids = new Set();
+  const visit = (value, key = "") => {
+    if (Array.isArray(value)) {
+      if (/evidence/i.test(key)) value.forEach((item) => typeof item === "string" && ids.add(item));
+      value.forEach((item) => visit(item, key));
+    } else if (value && typeof value === "object") {
+      Object.entries(value).forEach(([childKey, child]) => visit(child, childKey));
+    }
+  };
+  visit(report);
+  return ids;
+}
+
+async function ensureCitedExecutionExchanges({ report, repository, ledger, logger, executed }) {
+  const cited = reportEvidenceIds(report);
+  const citedEntries = ledger.entries.filter((entry) => cited.has(entry.evidenceId));
+  const citedSpanIds = new Set(citedEntries.flatMap((entry) => [
+    entry.result?.spanId,
+    ...(entry.result?.hits ?? []).map((hit) => hit.spanId),
+    ...(["search_trace", "get_span_content", "get_tool_exchange"].includes(entry.tool)
+      ? (entry.rawRefs ?? []).map((ref) => ref.spanId)
+      : []),
+  ]).filter(Boolean));
+  // Expand every Tool/Skill cited by the RCA or by its source-bearing search
+  // evidence. Exchanges already inspected during investigation are retained
+  // by the ledger and rendered too; unrelated calls are not dumped into the
+  // main report because one Session can contain hundreds of them.
+  const spanIds = citedSpanIds;
+  for (const spanId of spanIds) {
+    const span = repository.byId.get(spanId);
+    const auditable = span?.spanType === "TOOL" || (span?.spanType === "SPAN" && /skill/i.test(String(span?.name ?? "")));
+    if (!auditable) continue;
+    if (ledger.entries.some((entry) => entry.tool === "get_tool_exchange" && entry.result?.spanId === spanId)) continue;
+    const action = {
+      tool: "get_tool_exchange", arguments: { spanId, outputLength: 12000 },
+      purpose: "最终RCA引用该Tool/Skill Span，程序自动补读真实输入与返回用于报告审计",
+    };
+    const result = await executeTraceTool(repository, action);
+    const evidence = ledger.add({ source: "program", ...action, result });
+    executed.add(actionKey(action));
+    await logger.event({
+      phase: "final_rca", actor: "orchestrator", type: "cited_execution_exchange_expanded",
+      summary: "已自动展开最终RCA涉及的Tool/Skill交换，登记为" + evidence.evidenceId,
+      data: { spanId, evidenceId: evidence.evidenceId, name: span.name, spanType: span.spanType },
+    });
+  }
+}
+
+function deterministicGapFallback(candidate, caseData) {
+  const criterion = caseData.officialMissedCriteria[0];
+  const groundedRequired = (candidate?.requiredState?.elements ?? []).filter((element) => {
+    const type = element?.source?.type;
+    const excerpt = String(element?.source?.excerpt ?? "");
+    const source = type === "query" ? caseData.query : type === "ground_truth" ? criterion.text : "";
+    return excerpt && String(source ?? "").includes(excerpt);
+  });
+  const groundedAnswer = (candidate?.answerState?.relevantExcerpts ?? [])
+    .map((item) => locateAnswerQuote(caseData.idaAnswer, item?.quote))
+    .filter(Boolean)
+    .map((item) => ({ quote: item.quote }));
+  return {
+    targetId: candidate?.targetId ?? "target-gt-1",
+    criterion: { id: criterion.id ?? "GT-1", text: criterion.text, officialVerdict: criterion.officialVerdict },
+    requiredState: {
+      summary: "程序从官方未命中项生成的确定性调查要求",
+      elements: groundedRequired.length ? groundedRequired : [{
+        description: "官方未命中项完整原文",
+        source: { type: "ground_truth", excerpt: criterion.text },
+      }],
+    },
+    answerState: { summary: "仅保留可与IDA答案精确对齐的原文", relevantExcerpts: groundedAnswer },
+    difference: { summary: "官方未命中项要求与IDA最终答案中已定位原文存在差距" },
+    phenomenonToExplain: `调查官方未命中项“${criterion.text}”在IDA运行轨迹中的信息生命周期。`,
+  };
+}
+
+function finalGenerationId(executionSteps = []) {
+  return [...executionSteps].reverse().find((step) => step.spanType === "GENERATION")?.spanId;
+}
+
+function firstToolSpan(executionSteps, names) {
+  const accepted = new Set(names ?? []);
+  return executionSteps.find((step) => (step.spanType === "TOOL" || (step.spanType === "SPAN" && /skill/i.test(String(step.name ?? "")))) && accepted.has(step.name));
+}
+
+function programmaticCoverageActions(policy, executionSteps) {
+  const actions = [];
+  const push = (tool, args, purpose) => actions.push({ tool, arguments: args, purpose });
+  for (const query of policy.allTraceSearches ?? []) {
+    push("search_trace", { query, scope: "all", fields: ["input", "output"], maxHits: 20 }, `程序化检查GT原子事实：${query}`);
+  }
+  for (const group of policy.factEvidenceGroups ?? []) {
+    for (const anchor of group.anchors ?? []) {
+      push("search_trace", { query: anchor, scope: "all", fields: ["input", "output"], maxHits: 20 }, `程序化定位答案事实锚点：${anchor}`);
+    }
+  }
+  if (policy.requireToolQueryInventory) push("list_tool_queries", {}, "程序化读取全部结构化查询清单");
+  for (const name of [...(policy.schemaToolNames ?? []), ...(policy.executionToolNames ?? [])]) {
+    const span = firstToolSpan(executionSteps, [name]);
+    if (span) push("get_tool_exchange", { spanId: span.spanId, outputLength: 12000 }, `程序化读取${name}关键Tool交换`);
+  }
+  if (policy.requireAnyExecutionTool) {
+    const span = firstToolSpan(executionSteps, policy.executionToolCandidates);
+    if (span) push("get_tool_exchange", { spanId: span.spanId, outputLength: 12000 }, `程序化读取实际分析Tool交换：${span.name}`);
+  }
+  for (const spanId of [...(policy.requiredToolSpanIds ?? []), ...(policy.artifactToolSpanIds ?? [])]) {
+    push("get_tool_exchange", { spanId, outputLength: 12000 }, `程序化读取指定Tool交换：${spanId}`);
+  }
+  if (policy.requireFinalGenerationOutput) {
+    const spanId = finalGenerationId(executionSteps);
+    if (spanId) push("get_span_content", { spanId, field: "output", start: 0, length: 12000 }, "程序化读取最终Generation原始输出");
+  }
+  const unique = new Map();
+  for (const action of actions) unique.set(actionKey(action), action);
+  return [...unique.values()];
+}
+
+async function executeProgrammaticCoverage({ policy, executionSteps, repository, ledger, logger, executed }) {
+  for (const action of programmaticCoverageActions(policy, executionSteps)) {
+    const existing = ledger.refreshExisting({ tool: action.tool, arguments: action.arguments, purpose: action.purpose, round: 0 });
+    if (existing) {
+      executed.add(actionKey(action));
+      continue;
+    }
+    try {
+      const result = await executeTraceTool(repository, action);
+      const evidence = ledger.add({ source: "program", ...action, result });
+      executed.add(actionKey(action));
+      await logger.event({
+        phase: "coverage_bootstrap", actor: "orchestrator", type: "programmatic_coverage_result",
+        summary: `${action.purpose}，登记为${evidence.evidenceId}`, data: evidence,
+      });
+    } catch (error) {
+      await logger.event({
+        phase: "coverage_bootstrap", actor: "orchestrator", type: "programmatic_coverage_error",
+        summary: error.message, data: action,
+      });
+    }
+  }
 }
 
 async function validateRawRefs(ledger, repository) {
@@ -173,7 +318,17 @@ async function initializeFreshRun({ caseData, casePath, traceRoot, outputRoot, o
       gapFeedback = `\n\n上一次候选未通过确定性业务校验。请重新生成完整JSON并修复以下错误：\n- ${gapValidation.errors.join("\n- ")}\nanswerState.relevantExcerpts.quote必须直接逐字复制IDA最终答案原文，包括其中的Markdown标记和空白。`;
     }
     if (!gapValidation?.valid) {
-      throw new Error(`Scoring Gap validation failed after retry: ${gapValidation?.errors?.join("; ")}`);
+      const fallbackCandidate = deterministicGapFallback(gapValidation?.target ?? {}, caseData);
+      gapValidation = validateScoringGapTarget(fallbackCandidate, caseData);
+      await logger.event({
+        phase: "scoring_gap", actor: "orchestrator",
+        type: gapValidation.valid ? "deterministic_fallback_applied" : "deterministic_fallback_failed",
+        summary: gapValidation.valid
+          ? "模型引文未能精确对齐；已由程序保留可验证原文并建立中立评分差距"
+          : "Scoring Gap确定性回退仍未通过校验",
+        data: { errors: gapValidation.errors, quoteAlignments: gapValidation.quoteAlignments },
+      });
+      if (!gapValidation.valid) throw new Error(`Scoring Gap validation failed after deterministic fallback: ${gapValidation.errors.join("; ")}`);
     }
     state.gapValidation = gapValidation;
     const target = gapValidation.target;
@@ -415,7 +570,11 @@ export async function runRcaCase({
   try {
   investigationPolicy = buildInvestigationPolicy(caseData, target, { overview, executionSteps });
   const coverageOptions = { policy: investigationPolicy, executionSteps };
+  await executeProgrammaticCoverage({
+    policy: investigationPolicy, executionSteps, repository, ledger, logger, executed,
+  });
   coverage = evaluateInvestigationCoverage(ledger, coverageOptions);
+  await saveCheckpoint(outputDir, { ...state, decisions, executed, actionAttempts, stallCount: state.stallCount ?? 0, nextRound: state.nextRound });
   let stallCount = state.stallCount ?? 0;
   const maxPromptChars = Number.isFinite(agent.maxPromptChars)
     ? agent.maxPromptChars
@@ -560,9 +719,11 @@ export async function runRcaCase({
       previousCoverageSignature,
       coverage,
       stallCount,
+      newEvidenceEntries: ledger.entries.slice(previousEvidenceCount),
     });
     stallCount = progress.stallCount;
-    decisions.push({ round, decision, coverage, progress });
+    const hypotheses = mergeHypotheses(decisions.at(-1)?.hypotheses ?? [], decision.hypotheses ?? [], ledger);
+    decisions.push({ round, decision, coverage, progress, hypotheses });
     nextRound = round + 1;
     await logger.event({
       phase: `investigation_round_${round}`,
@@ -597,10 +758,18 @@ export async function runRcaCase({
       break;
     }
     if (!coverage.complete && stallCount >= 3) {
-      const error = new Error(`Investigation stalled before required coverage completed: ${coverage.missing.join("; ")}`);
-      error.code = "RCA_INVESTIGATION_STALLED";
-      error.remediation = "检查未覆盖项与动作预算；修正后仅从当前Checkpoint恢复，不要重跑已完成的Trace读取。";
-      throw error;
+      coverage = closeCoverageAsUnobservable(
+        coverage,
+        "连续三轮没有新增可验证证据；未完成检查保留为unobservable，不再用格式性覆盖缺口阻断报告",
+      );
+      agentReadyForConclusion = true;
+      conclusionReason = "orchestrator_closed_unobservable_after_three_no_progress_rounds";
+      await logger.event({
+        phase: `investigation_round_${round}`, actor: "orchestrator", type: "investigation_unobservable_converged",
+        summary: "连续三轮无新增可验证证据；按证据边界收束，未覆盖项标记为unobservable",
+        data: coverage.closure,
+      });
+      break;
     }
     coverageFeedback = coverage.complete
       ? `${stallCount ? `已连续${stallCount}轮无新增证据。` : ""}必要覆盖已完成。请关闭已解决问题；Trace不能回答的剩余问题标记为unobservable，不得重复读取。`
@@ -610,7 +779,11 @@ export async function runRcaCase({
     // explicit conclusion; those are operationally different failures.
   }
   if (!coverage.complete) {
-    throw new Error(`Investigation coverage incomplete: ${coverage.missing.join("; ")}`);
+    coverage = closeCoverageAsUnobservable(
+      coverage,
+      `达到maxRounds=${maxRounds}；剩余检查在当前Trace和动作预算内不可观察`,
+    );
+    conclusionReason = "orchestrator_closed_unobservable_at_round_budget";
   }
   if (!agentReadyForConclusion) {
     // maxRounds is a safety budget, not a requirement that the model emit one
@@ -638,7 +811,7 @@ export async function runRcaCase({
     const context = buildWithinPromptBudget({
       stage: "final_rca",
       maxPromptChars,
-      builder: ({ evidenceBudget }) => `${finalReportPrompt({ caseData, target, overview, ledger, evidenceBudget })}${correction}`,
+      builder: ({ evidenceBudget }) => `${finalReportPrompt({ caseData, target, overview, ledger, coverage, evidenceBudget })}${correction}`,
     });
     const { prompt } = context;
     await logger.event({
@@ -654,8 +827,18 @@ export async function runRcaCase({
       prompt,
       retryInstruction: "必须返回规定JSON，并且evidenceIds只能引用证据账本中存在的EV编号",
     });
+    await ensureCitedExecutionExchanges({ report, repository, ledger, logger, executed });
     citationValidation = ledger.validateCitations(report);
     evidenceConsistencyValidation = validateReportEvidenceConsistency(report, ledger);
+    const causalClosure = validateCausalClosure(report, ledger, repository);
+    evidenceConsistencyValidation.causalClosure = causalClosure;
+    evidenceConsistencyValidation.errors.push(...causalClosure.errors);
+    evidenceConsistencyValidation.valid &&= causalClosure.valid;
+    const reportOpening = validateReportOpening(report);
+    evidenceConsistencyValidation.reportOpening = reportOpening;
+    evidenceConsistencyValidation.errors.push(...reportOpening.errors);
+    evidenceConsistencyValidation.valid &&= reportOpening.valid;
+    report.causalInvestigationStatus = causalClosure.status;
     await logger.event({
       phase: "final_rca",
       actor: "validator",
@@ -691,6 +874,11 @@ export async function runRcaCase({
   await writeFile(path.join(outputDir, "evidence-ledger.json"), `${JSON.stringify(ledger.entries, null, 2)}\n`, "utf8");
   await writeFile(path.join(outputDir, "rca-report.json"), `${JSON.stringify(report, null, 2)}\n`, "utf8");
   await writeFile(
+    path.join(outputDir, "key-execution-evidence.json"),
+    `${JSON.stringify(buildKeyExecutionEvidence(report, ledger), null, 2)}\n`,
+    "utf8",
+  );
+  await writeFile(
     path.join(outputDir, "rca-report.md"),
     renderReportMarkdown(
       report,
@@ -698,6 +886,7 @@ export async function runRcaCase({
       rawEvidenceValidation,
       evidenceConsistencyValidation,
       caseData.traceEvidenceBoundary,
+      ledger,
     ),
     "utf8",
   );

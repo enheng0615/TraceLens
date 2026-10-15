@@ -99,6 +99,18 @@ test("does not hide changed prose behind Markdown link normalization", async () 
   assert.equal(result.accepted, false);
 });
 
+test("accepts an exact Trace answer prefix followed by delivered attachment bodies", async () => {
+  const traceAnswer = `# 分析报告\n${"正文证据。".repeat(50)}`;
+  const suppliedAnswer = `${traceAnswer}\n\n---\n\n## 附件内容：analysis.csv\na,b\n1,2`;
+  const result = await resolveEvaluatedAnswer({
+    suppliedAnswer, traceExchange: { idaAnswer: traceAnswer, spanId: "agent" },
+  });
+  assert.equal(result.accepted, true);
+  assert.equal(result.content, suppliedAnswer);
+  assert.equal(result.resolution, "trace_answer_exact_prefix_with_delivered_artifacts");
+  assert.equal(result.provenance.alignment.appendedArtifactChars > 0, true);
+});
+
 test("accepts Markdown answers differing only by redundant blank lines", async () => {
   const result = await resolveEvaluatedAnswer({
     suppliedAnswer: "截图如下\n\n正文\n",
@@ -106,4 +118,16 @@ test("accepts Markdown answers differing only by redundant blank lines", async (
   });
   assert.equal(result.accepted, true);
   assert.equal(result.resolution, "markdown_link_target_normalized_exact_match");
+});
+
+test("accepts rendered-Markdown exact answer body followed by delivered attachments", async () => {
+  const traceAnswer = "# 分析报告\n\n\n\n| 指标 | 值 |\n|---|---:|\n| 主板 | -0.01 |\n\n" + "正文。".repeat(80);
+  const suppliedAnswer = "# 分析报告\n\n| 指标 | 值 |\n|---|---:|\n| 主板 | -0.01 |\n\n" + "正文。".repeat(80) + "\n\n---\n\n## 附件内容：output.csv\n主板,-0.01";
+  const result = await resolveEvaluatedAnswer({
+    suppliedAnswer, traceExchange: { idaAnswer: traceAnswer, spanId: "agent-54" },
+  });
+  assert.equal(result.accepted, true);
+  assert.equal(result.content, suppliedAnswer);
+  assert.equal(result.resolution, "trace_answer_markdown_exact_with_delivered_artifacts");
+  assert.equal(result.provenance.alignment.appendedArtifactChars > 0, true);
 });

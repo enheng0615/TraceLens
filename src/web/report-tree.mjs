@@ -14,6 +14,9 @@ export function sessionIdFromPath(file) {
 export function artifactLabel(name, criterionId) {
   const friendly = {
     "rca-report.md": "RCA报告",
+    "feedback-report.md": "负向反馈报告",
+    "feedback-result.json": "反馈结构化结果",
+    "evidence-ledger.json": "证据索引",
     "failure-summary.md": "失败摘要",
     "agent-run-summary.md": "执行摘要",
     "agent-run.md": "Agent日志",
@@ -34,6 +37,7 @@ function aggregateStatus(items) {
   if (items.some((item) => item.status === "completed_with_evidence_gaps")) return "completed_with_evidence_gaps";
   if (items.some((item) => item.status === "completed")) return "completed";
   if (items.some((item) => item.status === "queued")) return "queued";
+  if (items.length && items.every((item) => item.status === "evaluation_input_issue")) return "evaluation_input_issue";
   if (items.length && items.every((item) => item.status === "source_run_failed")) return "source_run_failed";
   return items.length ? "skipped" : "completed_no_action";
 }
@@ -47,6 +51,7 @@ function artifactBelongsToItem(artifact, item, jobDir) {
     const relativeCase = path.relative(jobDir, path.resolve(item.casePath));
     if (artifact.path === relativeCase) return true;
   }
+  if (item.scenario === "online-feedback" && item.rowNumber != null) return false;
   return Boolean(
     item.criterionId && artifact.criterionId === item.criterionId &&
     item.sessionId && artifact.sessionId === String(item.sessionId),
@@ -72,7 +77,8 @@ export function buildReportTree({ job, manifest, artifacts }) {
     if (rowNumber !== undefined && rowNumber !== null) session.rowNumbers.add(Number(rowNumber));
     return session;
   };
-  const preferredArtifact = (itemArtifacts) => itemArtifacts.find((artifact) => artifact.name === "rca-report.md")
+  const preferredArtifact = (itemArtifacts) => itemArtifacts.find((artifact) => artifact.name === "feedback-report.md")
+    ?? itemArtifacts.find((artifact) => artifact.name === "rca-report.md")
     ?? itemArtifacts.find((artifact) => artifact.name === "failure-summary.md")
     ?? itemArtifacts.find((artifact) => artifact.name === "agent-run-summary.md")
     ?? itemArtifacts.find((artifact) => artifact.name === "agent-run.md")
@@ -85,9 +91,9 @@ export function buildReportTree({ job, manifest, artifacts }) {
     session.items.push({
       rowNumber: planned.rowNumber,
       sessionId: planned.sessionId,
-      status: planned.initialStatus === "source_run_failed" ? "source_run_failed" : "queued",
+      status: ["source_run_failed", "evaluation_input_issue"].includes(planned.initialStatus) ? planned.initialStatus : "queued",
       stage: "planned",
-      reason: planned.initialStatus === "source_run_failed" ? "source_run_failed" : "awaiting_execution",
+      reason: ["source_run_failed", "evaluation_input_issue"].includes(planned.initialStatus) ? planned.initialStatus : "awaiting_execution",
       planned: true,
     });
   }
@@ -155,8 +161,18 @@ export function buildReportTree({ job, manifest, artifacts }) {
     const nonCriterionItems = session.items.filter((item) => !item.planned && !item.criterionId);
     const statusItems = [...session.criteria, ...plannedItems, ...nonCriterionItems];
     const sourceIssue = session.items.find((item) => item.status === "source_run_failed");
+    const evaluationIssue = session.items.find((item) => item.status === "evaluation_input_issue");
     const sessionFailure = nonCriterionItems.find((item) => item.status === "failed");
-    const issue = sourceIssue ? {
+    const issue = evaluationIssue ? {
+      kind: "evaluation_input_issue",
+      status: evaluationIssue.status,
+      stage: evaluationIssue.stage ?? "evaluation_input",
+      code: evaluationIssue.code ?? "EVALUATION_INPUT_INCOMPLETE",
+      label: evaluationIssue.label ?? "评测结果不完整",
+      detail: evaluationIssue.detail ?? "上游评测没有形成可用于Trace归因的未命中GT。",
+      remediation: evaluationIssue.remediation ?? "检查上游评测任务并补齐有效score和机评未命中项后重新上传CSV。",
+      rowNumber: evaluationIssue.rowNumber ?? null,
+    } : sourceIssue ? {
       kind: "source_run_failed",
       status: sourceIssue.status,
       stage: sourceIssue.stage ?? "source_run",
@@ -189,6 +205,7 @@ export function buildReportTree({ job, manifest, artifacts }) {
         failed: statusItems.filter((item) => item.status === "failed").length,
         skipped: statusItems.filter((item) => item.status === "skipped").length,
         sourceRunFailed: statusItems.filter((item) => item.status === "source_run_failed").length,
+        evaluationInputIssues: statusItems.filter((item) => item.status === "evaluation_input_issue").length,
         queued: statusItems.filter((item) => item.status === "queued").length,
       },
       issue,
@@ -200,7 +217,7 @@ export function buildReportTree({ job, manifest, artifacts }) {
     "workflow-summary.md", WEB_FAILURE_MD, WEB_FAILURE_JSON, WEB_JOB_LOG,
   ].includes(artifact.name));
   const actualRows = new Set(items
-    .filter((item) => item.reason !== "full_score" && item.stage !== "score_filter")
+    .filter((item) => item.reason !== "full_score" && item.stage !== "score_filter" && item.status !== "queued")
     .map((item) => Number(item.rowNumber))
     .filter(Number.isFinite));
   return {
@@ -221,8 +238,9 @@ export function buildReportTree({ job, manifest, artifacts }) {
       failed: sessionList.reduce((total, session) => total + session.counts.failed, 0),
       skipped: sessionList.reduce((total, session) => total + session.counts.skipped, 0),
       sourceRunFailed: sessionList.reduce((total, session) => total + session.counts.sourceRunFailed, 0),
+      evaluationInputIssues: sessionList.reduce((total, session) => total + session.counts.evaluationInputIssues, 0),
       queued: sessionList.reduce((total, session) => total + session.counts.queued, 0),
-      nonFullScoreRows: Number(manifest?.executionPlan?.nonFullScoreRows) || sessionList.length,
+      nonFullScoreRows: Number(manifest?.executionPlan?.nonFullScoreRows) || (job.type === "feedback-batch" ? Number(manifest?.counts?.plannedCriteria) : 0) || sessionList.length,
       startedRows: actualRows.size,
     },
     sessions: sessionList,

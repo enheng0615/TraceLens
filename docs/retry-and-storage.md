@@ -1,4 +1,4 @@
-# ORIGO 运行、失败与复跑设计
+# TraceLens 运行、失败与复跑设计
 
 ## 1. 基本原则
 
@@ -156,7 +156,7 @@ Resume 会在写入同一 Attempt 前，把现有失败快照复制到：
 
 ## 6. 不可归因源任务与截断 Tool Result
 
-批量输入只有在以下四个条件**同时成立**时，才写为 `source_run_failed`，不计入 ORIGO 分析失败，也不进入失败项复跑：
+批量输入只有在以下四个条件**同时成立**时，才写为 `source_run_failed`，不计入 TraceLens 分析失败，也不进入失败项复跑：
 
 ```text
 Session ID 为空
@@ -166,6 +166,18 @@ IDA 答案为空或 failed
 ```
 
 Manifest 保留逐项条件和固定说明：`Session ID 为空；score 为空；IDA 答案为空或 failed；机评为空或 {}`。Web 用琥珀色“源任务未运行”展示；需要先在上游重新运行 Agent，获得 Session 和评测结果后才能归因。只要四个条件中任一个不成立，仍按普通输入校验规则处理，不能误归类。
+
+### 评测输入问题
+
+有 Session 和 IDA 答案不代表已经形成可归因任务。CSV 行在进入 Trace 采集前还必须包含明确的官方未命中 GT。以下情况记录为 `evaluation_input_issue`，不计入 RCA 失败：
+
+- score 为空或不是 `0–1` 之间的有效数值，同时没有明确未命中 GT；
+- GT 为空；
+- `origin_critic_res`、`missing_indicators` 或 `labeling_eval_score` 等评测结果为空；
+- 评分器返回显式错误；
+- 非满分记录没有提供任何可识别的未命中 GT。
+
+Manifest 和 Web 会展示 CSV 行、具体缺失项、状态码和处理建议。此类 Session 不拉取 Trace、不调用模型，也不会出现在失败项或指定 Session 复跑候选中，因为复用同一 CSV 快照不能补齐上游评测结果。应先修复或重跑上游评测，再上传新的 CSV。未知的新机评格式仍严格报解析错误，避免把平台格式兼容缺陷误标为上游评测缺失。
 
 Trace 中若出现 `isResultTruncated=true` 且包含可信的 `fullResultDownloadUrl`，采集模块会：
 

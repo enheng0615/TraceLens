@@ -84,3 +84,25 @@ export function evidenceSatisfiesFactGroup(entry, group) {
 export function findFactGroupEvidence(entries, group) {
   return entries.filter((entry) => evidenceSatisfiesFactGroup(entry, group));
 }
+
+/**
+ * A fact chain may be distributed across a Tool request, Tool response and a
+ * final Generation. Require every literal anchor, but do not require all of
+ * them to be present in one serialized evidence object.
+ */
+export function findCompositeFactGroupEvidence(entries, group) {
+  const anchors = (group?.anchors ?? []).filter(Boolean);
+  const matchedAnchors = anchors.map((anchor) => {
+    const normalized = normalizeEvidenceText(anchor);
+    const evidence = entries.filter((entry) => evidencePayloadDocuments(entry).some(
+      (document) => normalizeEvidenceText(document).includes(normalized),
+    ));
+    return { anchor, evidenceIds: [...new Set(evidence.map((entry) => entry.evidenceId).filter(Boolean))] };
+  });
+  const evidenceIds = [...new Set(matchedAnchors.flatMap((item) => item.evidenceIds))];
+  return {
+    complete: matchedAnchors.length > 0 && matchedAnchors.every((item) => item.evidenceIds.length > 0),
+    matchedAnchors,
+    evidenceIds,
+  };
+}

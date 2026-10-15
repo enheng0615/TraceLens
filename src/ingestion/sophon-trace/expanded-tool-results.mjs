@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { isValidJsonFile, readJson, safeFileName, writeJsonAtomic } from "./file-store.mjs";
+import { assessEmbeddedResultTruncation } from "./truncation-assessment.mjs";
 
 const ALLOWED_HOST = "ida.bytedance.net";
 const ALLOWED_PATH = "/dataAgent/llm/api/v2/deepresearch/images";
@@ -102,7 +103,13 @@ export async function recoverExpandedToolResults({
   const attempts = [];
   for (const [spanId, detailPath] of spanDetailFiles) {
     const wrapper = await readJson(detailPath);
-    const descriptors = collectDescriptors(wrapper?.data?.output);
+    const assessments = assessEmbeddedResultTruncation(wrapper?.data?.output, "$.data.output");
+    const descriptors = collectDescriptors(wrapper?.data?.output).filter((descriptor) =>
+      assessments.some((assessment) =>
+        assessment.classification === "source_payload_missing" &&
+        assessment.fullResultDownloadUrl === descriptor.url,
+      ),
+    );
     if (!descriptors.length) continue;
     const artifactPath = path.join(outputDirectory, "expanded-tool-results", `${safeFileName(spanId)}.json`);
     if (!force && await isValidJsonFile(artifactPath)) {

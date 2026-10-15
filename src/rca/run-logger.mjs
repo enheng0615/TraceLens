@@ -21,7 +21,7 @@ export class RunLogger {
     await writeFile(this.jsonlPath, "", "utf8");
     await writeFile(
       this.markdownPath,
-      `# Trace RCA Agent 运行日志\n\n- Run ID: ${meta.runId}\n- Session: ${meta.sessionId}\n- Started: ${meta.startedAt}\n- Runtime: RCA Orchestrator + application-level Trace tools（具体模型模式见bootstrap事件）\n\n> 日志记录的是模型显式输出的调查摘要、行动请求与工具结果，不记录或声称暴露模型隐藏思维链。\n\n`,
+      `# TraceLens 运行日志\n\n- Run ID: ${meta.runId}\n- Session: ${meta.sessionId}\n- Started: ${meta.startedAt}\n- Runtime: RCA Orchestrator + application-level Trace tools（具体模型模式见bootstrap事件）\n\n> 日志记录的是模型显式输出的调查摘要、行动请求与工具结果，不记录或声称暴露模型隐藏思维链。\n\n`,
       "utf8",
     );
   }

@@ -1,72 +1,68 @@
-<p align="center">
-  <img src="src/web/public/assets/logo-horizontal.svg" width="360" alt="ORIGO">
-</p>
+<p align="center"><img src="src/web/public/assets/tracelens-logo.png" width="360" alt="TraceLens logo"></p>
 
 <p align="center">
   基于执行 Trace 的证据驱动根因分析框架
 </p>
 
-<p align="center">
-  <img alt="Node.js >= 20" src="https://img.shields.io/badge/Node.js-%3E%3D20-339933?logo=node.js&logoColor=white">
-  <img alt="ES Modules" src="https://img.shields.io/badge/modules-ESM-f7df1e?logo=javascript&logoColor=111">
-  <img alt="Tests passing" src="https://img.shields.io/badge/tests-passing-brightgreen">
-</p>
+# TraceLens
 
-# ORIGO
+> 从“答错了”追到有证据支持的原因；证据不够时，明确停在未知处。
 
-> **别让 Agent 评测止步于“答错了”，更要知道“为什么答错”。**
+TraceLens 是一个面向 Agent 执行记录的本地调查工作台。它接受**线上负向反馈**或**离线评测结果**，定位对应 Session 和调查范围，沿模型输出、工具调用、字段与交付产物追溯偏差，生成附带原始证据位置、校验结果和未决边界的分析报告。支持单例调查、CSV 批量处理、断点恢复与失败项复跑。
 
-ORIGO 沿着完整执行 Trace，回看模型输出、工具调用与数据流转，用可验证的原始证据定位答案遗漏关键评分点的真正原因。从单次 Session 到批量任务，它能自动生成**可追溯、可恢复、可审计**的根因分析报告，让 Agent 调优从经验猜测走向证据驱动。
-
-在**不重新评分、不改写 Ground Truth** 的前提下，ORIGO 将模型的调查能力与确定性程序校验结合，帮助开发者更快发现问题、验证判断并持续改进 Agent。
+模型负责提出调查动作，程序只执行白名单内的只读 Trace 操作，并检查覆盖、Evidence ID、原文位置与报告一致性。离线评测通道沿用已有评分和 Ground Truth，**不重新评分或改写 GT**；反馈通道不要求 GT，也不会把用户投诉直接当作已证实事实。
 
 > 当前 Sophon 采集和模型联调依赖内部服务与已登录的 `sophon-cli`。离线测试、核心模块阅读和固定样例回归不需要真实凭证。
 
-## 特性
+## 两类调查
+
+| 来源 | 输入 | 调查单位 | 结果 |
+|---|---|---|---|
+| 线上负向反馈 | Session ID、反馈原文；重复文本可加请求关联 ID | 反馈前的相关历史与选择性 Trace | `feedback-report.md`，明确反馈是否得到支持、根因状态与证据缺口 |
+| 离线评测 | 已有答案、GT、评分与机评结果，或评测 CSV | 每个明确未命中的 GT 项各建一个 Case | `rca-report.md`，解释评分差距及其可观察传播路径 |
+
+两条通道共享 Sophon 采集、只读证据账本、模型适配、引用与报告校验，以及本地 Web 任务管理。详细调用链见 [架构与冗余审查](docs/architecture.md)。
+
+## 核心能力
 
 - **证据驱动**：每条结论引用真实 Trace Evidence ID，并复核原文偏移与 SHA-256。
-- **完整 Trace 采集**：显式遍历 Session、Turn、Span 和 Trace Tree 分页，生成完整性报告。
+- **按范围采集**：离线评测核对完整 Trace；反馈调查以反馈时间为边界，按依赖选择性补拉，并记录完整性缺口。
 - **单 GT 调查**：每次 RCA 只处理一个官方未命中项，避免多个评分目标相互污染。
 - **确定性护栏**：程序校验调查覆盖、引用、搜索重放、因果置信度和报告一致性。
 - **批量编排**：支持 CSV、满分预过滤、Session 级并发、同 Session Trace 复用和失败隔离。
 - **断点与复跑**：保留 Checkpoint、失败摘要与不可变 Attempt，不用伪完成报告掩盖失败。
 - **本地工作台**：提供任务创建、进度、Batch → Session → GT 报告浏览和选择性复跑。
-- **多模型适配**：封装 Sophon、OpenAI 与 Anthropic Provider。
+- **多模型适配**：封装 Sophon、OpenAI 与 Anthropic Provider；当前正式 RCA 调查路径由 Sophon 结构化 JSON Action 驱动。
 
 ## 工作原理
 
 ```text
-业务输入 / CSV
-      │
-      ▼
-工作流层：校验输入、过滤满分项、按 Session 分组、按未命中 GT 拆 Case
-      │
-      ├──────────────► 采集层：下载完整 Trace、建立索引、审计完整性
-      │
-      ▼
-RCA 层：Scoring Gap → 只读 Trace 调查 → Evidence Ledger → 覆盖校验
-      │
-      ▼
-报告层：引用校验、原文 Hash、搜索重放、一致性校验 → RCA 报告
+Web / CLI
+  ├─ 负向反馈 → 时间线与反馈锚点 → 反馈前 Episode → 反馈调查 ┐
+  └─ 离线评测 → 输入预检 → Session 完整 Trace → 按未命中 GT 调查 ┤
+                                                           ↓
+                                  Evidence Ledger → 确定性校验 → 报告与运行产物
 ```
 
-更完整的依赖关系和数据流见 [架构说明](docs/architecture.md)。
+更完整的依赖关系、两条调用链、冗余审查与运行边界见 [架构与冗余审查](docs/architecture.md)。正式逐案报告采用 [固定分析报告模板](docs/analysis-report-template.md)。
 
 ## 项目结构
 
 ```text
-trace_agent/
+tracelens/
 ├── src/
-│   ├── ingestion/sophon-trace/  # Trace 采集、索引和完整性审计
-│   ├── providers/               # Sophon / OpenAI / Anthropic 适配
-│   ├── rca/                     # 证据调查、覆盖校验和报告生成
-│   ├── workflows/trace-rca/     # 单 Session / CSV 全链路编排
-│   └── web/                     # 本地 Web API、任务状态和前端
-├── scripts/                     # 轻量 CLI 入口
-├── examples/                    # 脱敏输入模板和固定样例
-├── skills/                      # 可独立调用的批处理 Skill
-├── test/                        # Node.js 离线测试
-└── docs/                        # 架构、存储和品牌文档
+│   ├── ingestion/sophon-trace/   # Session/Turn/Span 采集、索引、范围和完整性审计
+│   ├── providers/                # 模型协议与凭证适配
+│   ├── rca/                      # Case 调查、证据账本、校验、报告；scenarios/ 为反馈场景
+│   ├── workflows/trace-rca/      # 离线评分差距：单 Session / CSV 编排
+│   ├── workflows/online-feedback/ # 负向反馈：定位、选择性采集、单条/批次编排
+│   └── web/                      # HTTP、Job/Attempt、报告树与静态工作台
+├── scripts/                      # 正式 CLI 与诊断/重审工具
+├── examples/                     # 输入模板和固定回归样例
+├── skills/                       # 满分预过滤 Skill
+├── test/                         # 离线回归测试
+├── docs/                         # 架构、报告合同、存储与品牌规范
+└── .github/workflows/            # CI
 ```
 
 | 模块 | 稳定入口 | 说明 |
@@ -75,6 +71,7 @@ trace_agent/
 | 模型 Provider | 各 Provider 的工厂函数 | [模块文档](src/providers/README.md) |
 | RCA 领域层 | `src/rca/index.mjs` | [模块文档](src/rca/README.md) |
 | 工作流 | `src/workflows/trace-rca/index.mjs` | [模块文档](src/workflows/trace-rca/README.md) |
+| 负向反馈工作流 | `src/workflows/online-feedback/workflow.mjs` | [模块文档](src/workflows/online-feedback/README.md) |
 | Web 工作台 | `src/web/server.mjs` | [模块文档](src/web/README.md) |
 
 ## 环境要求
@@ -89,8 +86,8 @@ trace_agent/
 ### 1. 安装
 
 ```bash
-git clone https://github.com/enheng0615/trace_agent.git
-cd trace_agent
+git clone https://github.com/enheng0615/tracelens.git
+cd tracelens
 npm ci
 ```
 
@@ -130,9 +127,32 @@ npm test
 npm run web
 ```
 
+工作台分为 **负向反馈** 与 **离线题集** 两个通道。负向反馈支持单条分析和批量处理（上传候选 CSV 或从本机原始反馈目录筛选）；离线题集支持单 Session 归因和批量评测 CSV。任务、进度与报告统一呈现。Web API 和参数见 [Web 模块文档](src/web/README.md)。
+
 访问 <http://127.0.0.1:4317>。可以创建单 Session 或 CSV 任务、观察进度、查看报告，并对失败项或指定 Session 创建独立重跑 Attempt。
 
 Web 默认仅监听本机，当前没有登录和权限系统，**不要直接暴露到公网或共享网络**。
+
+### 负向反馈 CLI
+
+单条反馈可使用 Web 或统一工作流 CLI。输入 JSON 至少包含 `sessionId` 和 `requestQuery`：
+
+```bash
+npm run workflow:feedback -- \
+  --input <feedback.json> \
+  --workflow-output-root outputs/feedback-workflows
+```
+
+批量反馈 CSV 至少包含 `session_id,request_query` 两列，可选 `label,request_id_list,task_id`：
+
+```bash
+npm run workflow:feedback-batch -- \
+  --csv <negative-feedback.csv> \
+  --workflow-output-root outputs/feedback-workflows \
+  --session-count 10 --concurrency 3
+```
+
+已有本地历史与 Trace、需要手动限定输入或从 Checkpoint 恢复时，使用 `npm run feedback:analyze -- --help` 查看诊断入口。完整输入和结果约定见[反馈工作流文档](src/workflows/online-feedback/README.md)。
 
 ### 方式二：单 Session 全流程
 
@@ -275,7 +295,7 @@ checkpoint.json              # 已进入可恢复阶段时
 
 ## 质量边界
 
-正式完成要求同时满足：调查覆盖完整、Agent 明确宣布可结束、Evidence ID 存在、原始证据 Hash 可复核、确定性搜索可重放、报告一致性校验通过。没有重放或干预证据时，因果置信度最高为 `medium`。
+离线评测 RCA 的正式完成要求包括：调查覆盖完整、Agent 明确宣布可结束、Evidence ID 存在、原始证据 Hash 可复核、确定性搜索可重放、报告一致性校验通过。反馈通道另行校验反馈锚点、历史要求和因果闭合。两个通道都区分“报告生成”和“根因证实”；没有重放或干预证据时，因果置信度最高为 `medium`。
 
 当前尚未覆盖：
 

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildInvestigationPolicy } from "../../src/rca/investigation-policy.mjs";
+import { buildInvestigationPolicy, deriveAtomicSearchTerms } from "../../src/rca/investigation-policy.mjs";
 
 function target() {
   return {
@@ -101,5 +101,29 @@ test("mandatory searches never use model-authored scoring-gap explanations", () 
     },
   };
   const policy = buildInvestigationPolicy({}, t);
-  assert.deepEqual(policy.allTraceSearches, ["3. 债务收入比上升", "债务收入比上升"]);
+  assert.deepEqual(policy.allTraceSearches, ["债务收入比上升"]);
+});
+
+test("splits a long grounded GT sentence into literal atomic searches", () => {
+  const terms = deriveAtomicSearchTerms("1. 黄金和钻石等级客户在9月购买高毛利产品的占比较8月上升");
+  assert.ok(terms.includes("黄金和钻石等级客户"));
+  assert.ok(terms.includes("高毛利产品"));
+  assert.equal(terms.includes("黄金和钻石等级客户在9月购买高毛利产品的占比较8月上升"), false);
+});
+
+test("preserves single integers and complete decimal GT values", () => {
+  assert.deepEqual(deriveAtomicSearchTerms("9"), ["9"]);
+  assert.deepEqual(deriveAtomicSearchTerms("11.59"), ["11.59"]);
+  assert.deepEqual(deriveAtomicSearchTerms("8.23"), ["8.23"]);
+  assert.deepEqual(deriveAtomicSearchTerms("-7.23"), ["-7.23"]);
+  assert.deepEqual(deriveAtomicSearchTerms("1. 11.59"), ["11.59"]);
+});
+
+test("supports a completely omitted answer fact without fabricating answer evidence", () => {
+  const t = target();
+  t.answerState.relevantExcerpts = [];
+  t.difference.presentAndRelevant = [];
+  const policy = buildInvestigationPolicy({}, t);
+  assert.deepEqual(policy.factEvidenceGroups, []);
+  assert.equal(policy.allowNoActualAnswerFacts, true);
 });

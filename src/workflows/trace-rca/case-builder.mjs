@@ -61,6 +61,10 @@ export function buildRcaCases({
         machineGrading: criterion.source || "machine grading",
         idaAnswer: traceExchange?.answerResolution === "published_artifact_from_trace"
           ? "Published artifact body deterministically resolved from Sophon Trace write_file to lark_doc chain"
+          : traceExchange?.answerResolution === "trace_answer_exact_prefix_with_delivered_artifacts"
+            ? "CSV answer contains the exact Sophon Trace AGENT answer followed by delivered attachment bodies; both sections are preserved"
+          : traceExchange?.answerResolution === "trace_answer_markdown_exact_with_delivered_artifacts"
+            ? "CSV answer body is rendered-Markdown identical to the Sophon Trace AGENT answer and is followed by delivered attachment bodies; both sections are preserved"
           : traceExchange?.answerResolution === "explicitly_truncated_input_replaced_with_trace_output"
             ? "Input carried an explicit truncation marker; complete Sophon Trace AGENT output used after exact Query match"
             : source === "csv" ? "CSV answer column; checked against Sophon Trace" : "single-session input; checked against Sophon Trace",

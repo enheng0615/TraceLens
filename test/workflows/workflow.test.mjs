@@ -464,3 +464,36 @@ test("CSV workflow records upstream source failures without counting them as RCA
   assert.equal(result.items[0].status, "source_run_failed");
   assert.equal(result.items[0].detail, "Session ID 为空；score 为空；IDA 答案为空或 failed；机评为空或 {}");
 });
+
+test("CSV workflow records incomplete evaluation input without Trace collection or failure", async () => {
+  const calls = { ensureTrace: [], cases: [] };
+  const output = await mkdtemp(path.join(os.tmpdir(), "trace-rca-evaluation-input-"));
+  const result = await runCsvTraceRcaWorkflow({
+    csvPath: "/safe/input.csv",
+    workflowOutputRoot: output,
+    csvReader: async () => ({ records: [
+      {
+        rowNumber: 55, sessionId: "30658545", query: "q1",
+        groundTruth: JSON.stringify({ 结论: { groundTruth: ["required"] } }), score: "",
+        machineGrading: { origin_critic_res: {}, score_dict: { error100: 0 } }, idaAnswer: "answer",
+      },
+      {
+        rowNumber: 165, sessionId: "30665165", query: "q2", groundTruth: "", score: "",
+        machineGrading: { origin_critic_res: { missing_indicators: [] }, score_dict: { error100: 0, labeling_eval_score: [] } }, idaAnswer: "answer",
+      },
+    ] }),
+    dependencies: dependencies(calls),
+  });
+  assert.equal(result.status, "completed_no_action");
+  assert.equal(result.counts.failed, 0);
+  assert.equal(result.counts.evaluationInputIssues, 2);
+  assert.deepEqual(calls.ensureTrace, []);
+  assert.deepEqual(result.items.map((item) => [item.rowNumber, item.status]), [
+    [55, "evaluation_input_issue"],
+    [165, "evaluation_input_issue"],
+  ]);
+  assert.match(result.items[0].detail, /score为空/);
+  assert.match(result.items[1].detail, /GT为空/);
+  const manifest = JSON.parse(await readFile(result.manifestPath, "utf8"));
+  assert.equal(manifest.executionPlan.records[0].initialStatus, "evaluation_input_issue");
+});

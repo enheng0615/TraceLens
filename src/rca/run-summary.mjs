@@ -4,7 +4,7 @@ function code(value) {
 
 export function renderRunSummary({ runId, mode, modelInfo, target, decisions, ledger, coverage, report, investigationPolicy }) {
   const lines = [
-    "# Trace RCA Agent 执行摘要",
+    "# TraceLens 执行摘要",
     "",
     `- Run ID：${runId}`,
     `- 模式：${mode}`,

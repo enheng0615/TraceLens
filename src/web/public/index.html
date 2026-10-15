@@ -4,9 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
-  <title>ORIGO</title>
-  <link rel="icon" href="./assets/favicon.svg" type="image/svg+xml">
+  <title>TraceLens</title>
+  <link rel="icon" href="./assets/tracelens-mark.svg" type="image/svg+xml">
   <link rel="stylesheet" href="./styles.css">
+  <link rel="stylesheet" href="./tracelens.css">
 </head>
 <body>
   <a class="skip-link" href="#main">跳到主要内容</a>
@@ -33,14 +34,18 @@
 
   <header class="global-nav">
     <div class="nav-inner">
-      <button class="wordmark" data-view="workspace" aria-label="返回 ORIGO 工作台"><img class="brand-mark" src="./assets/logo-mark.svg" alt=""><span>ORIGO</span></button>
+      <button class="wordmark" data-view="workspace" aria-label="返回 TraceLens 工作台"><img class="brand-logo" src="./assets/tracelens-logo.png" alt="TraceLens"></button>
+      <p class="nav-section-label">调查工作台</p>
       <nav class="main-nav" aria-label="主导航">
-        <button class="nav-link active" data-view="workspace">概览</button>
-        <button class="nav-link" data-view="session-new">单 Session</button>
-        <button class="nav-link" data-view="csv-new">批量 CSV</button>
-        <button class="nav-link" data-view="reports">报告</button>
-        <button class="nav-link" data-view="history">运行历史</button>
+        <button class="nav-link active" data-view="workspace"><svg aria-hidden="true"><use href="#i-grid"/></svg>工作台</button>
+        <span class="nav-group-label">调查通道</span>
+        <button class="nav-link" data-view="feedback"><svg aria-hidden="true"><use href="#i-session"/></svg>负向反馈</button>
+        <button class="nav-link" data-view="offline"><svg aria-hidden="true"><use href="#i-folder"/></svg>离线题集</button>
+        <span class="nav-group-label">调查结果</span>
+        <button class="nav-link" data-view="reports"><svg aria-hidden="true"><use href="#i-report"/></svg>报告</button>
+        <button class="nav-link" data-view="history"><svg aria-hidden="true"><use href="#i-history"/></svg>运行历史</button>
       </nav>
+      <div class="sidebar-note"><span class="sidebar-note-label">工作方式</span><strong>沿证据，找到原因。</strong><p>反馈与评测进入同一调查工作台，保留每次运行的证据、结论和边界。</p></div>
       <div class="nav-end">
         <span class="service-state"><span id="health-dot" class="health-dot"></span><span id="health-title">正在连接</span></span>
         <button class="icon-button" data-view="settings" aria-label="运行配置"><svg><use href="#i-settings"/></svg></button>
@@ -49,44 +54,71 @@
   </header>
 
   <main id="main" tabindex="-1">
+    <div class="workspace-topbar"><span id="view-location">工作台 / 概览</span><div><span class="environment-label">本地运行 · Trace 只读调查</span><button id="new-investigation" class="button primary-small" data-view="workspace"><svg aria-hidden="true"><use href="#i-plus"/></svg>新建调查</button></div></div>
     <section id="workspace-view" class="view active">
-      <div class="home-hero page-width">
-        <p class="kicker">TRACE ROOT CAUSE ANALYSIS</p>
-        <h1>让每一次失分，<br><span>都有证据可循。</span></h1>
-        <p class="hero-intro">从评测结果出发，沿 Agent 的真实运行轨迹逐层调查。<br>连接 Sophon Trace、Pi Agent 与确定性证据校验。</p>
-        <div class="hero-actions">
-          <button class="pill-button primary" data-view="session-new">开始单题归因</button>
-          <button class="pill-button text" data-view="csv-new">运行批量评测 <svg><use href="#i-chevron"/></svg></button>
-        </div>
+      <div class="workspace-heading page-width"><div class="workspace-heading-copy"><p class="kicker">TRACELENS / INVESTIGATION DESK</p><h1>每个失分，<br><span>都有迹可循。</span></h1><p>从用户负向反馈或离线评测题集出发，回到真实执行记录，沿证据追溯原因与边界。</p><div class="hero-actions"><button class="pill-button primary" data-view="feedback">负向反馈入口 <svg aria-hidden="true"><use href="#i-arrow"/></svg></button><button class="button hero-secondary" data-view="offline">离线题集入口 <svg aria-hidden="true"><use href="#i-arrow"/></svg></button></div></div><div class="investigation-path" aria-label="调查流程"><span class="path-topline">从线索到结论</span><ol><li><b>01</b><span><strong>选择来源</strong><small>用户反馈或离线评测</small></span></li><li><b>02</b><span><strong>追踪执行</strong><small>历史要求、调用与结果</small></span></li><li><b>03</b><span><strong>核验证据</strong><small>结论、缺口与未决项</small></span></li></ol><span class="path-footer">TRACE → EVIDENCE → RCA</span></div></div>
+      <div class="section-heading page-width entry-heading"><div><p class="kicker">调查来源</p><h2>从哪里开始调查？</h2><p>先确定问题来自用户反馈还是离线评测，再选择处理规模。</p></div></div>
+      <div class="channel-grid page-width">
+        <article class="channel-card feedback-channel"><div class="channel-head"><span class="channel-number">用户负向反馈</span><span class="channel-icon"><svg aria-hidden="true"><use href="#i-session"/></svg></span></div><div><h3>负向反馈</h3><p>用户明确指出结果不对时，从反馈原文和 Session 出发，追查历史要求、工具调用与最终交付。</p></div><div class="channel-foot"><span>适用于：线上真实用户反馈</span><div class="channel-options"><button class="channel-button" data-view="feedback-batch-new">批量反馈 <svg aria-hidden="true"><use href="#i-arrow"/></svg></button><button class="channel-button secondary" data-view="feedback-new">单条反馈 <svg aria-hidden="true"><use href="#i-arrow"/></svg></button></div></div></article>
+        <article class="channel-card offline-channel"><div class="channel-head"><span class="channel-number">离线评测结果</span><span class="channel-icon"><svg aria-hidden="true"><use href="#i-table"/></svg></span></div><div><h3>离线题集</h3><p>从已有评测结果定位失分。按输入规模选择批量导入，或聚焦单个 Session 深入调查。</p></div><div class="channel-foot"><span>适用于：离线评测与回归题集</span><div class="channel-options"><button class="channel-button" data-view="csv-new">批量 CSV <svg aria-hidden="true"><use href="#i-arrow"/></svg></button><button class="channel-button secondary" data-view="session-new">单 Session <svg aria-hidden="true"><use href="#i-arrow"/></svg></button></div></div></article>
       </div>
-
-      <div class="entry-grid page-width">
-        <button class="entry-card session-entry" data-view="session-new">
-          <span class="entry-copy"><span class="eyebrow">单题深度分析</span><strong>单 Session 归因</strong><small>输入一道题的评分结果，完整追踪答案中的事实链与缺失事实链。</small><span class="entry-action">创建任务 <svg><use href="#i-arrow"/></svg></span></span>
-          <span class="entry-visual session-visual" aria-hidden="true"><span class="trace-ring r1"></span><span class="trace-ring r2"></span><span class="trace-dot d1"></span><span class="trace-dot d2"></span><span class="trace-core"><svg><use href="#i-session"/></svg></span></span>
-        </button>
-        <button class="entry-card csv-entry" data-view="csv-new">
-          <span class="entry-copy"><span class="eyebrow">题集规模运行</span><strong>批量 CSV 归因</strong><small>一次导入评测题集，自动拆分未命中 GT，并复用相同 Session 的 Trace。</small><span class="entry-action">导入题集 <svg><use href="#i-arrow"/></svg></span></span>
-          <span class="entry-visual table-visual" aria-hidden="true"><span class="sheet sheet-back"></span><span class="sheet sheet-mid"></span><span class="sheet sheet-front"><svg><use href="#i-table"/></svg><i></i><i></i><i></i></span></span>
-        </button>
-      </div>
-
       <div class="overview-strip page-width">
-        <div><strong id="metric-running">0</strong><span>正在运行</span></div>
-        <div><strong id="metric-completed">0</strong><span>完成报告</span></div>
-        <div><strong id="metric-failed">0</strong><span>需要处理</span></div>
-        <div><strong id="job-count">0</strong><span>全部任务</span></div>
+        <button class="metric-card" data-history-filter="running"><span>正在运行</span><strong id="metric-running">0</strong><small>查看正在调查的任务 <svg aria-hidden="true"><use href="#i-arrow"/></svg></small></button>
+        <button class="metric-card" data-history-filter="failed"><span>失败运行记录</span><strong id="metric-failed">0</strong><small>查看诊断与运行链 <svg aria-hidden="true"><use href="#i-arrow"/></svg></small></button>
+        <button class="metric-card" data-history-filter="completed"><span>已完成</span><strong id="metric-completed">0</strong><small>阅读结论与证据 <svg aria-hidden="true"><use href="#i-arrow"/></svg></small></button>
+        <button class="metric-card" data-history-filter="all"><span>全部任务</span><strong id="job-count">0</strong><small>进入运行历史 <svg aria-hidden="true"><use href="#i-arrow"/></svg></small></button>
       </div>
+      <div class="workspace-activity page-width"><section class="activity-panel"><div class="section-heading"><div><p class="kicker">QUEUE / 最近动态</p><h2>继续处理</h2><p>直接打开任务，查看运行阶段、诊断和报告。</p></div><button class="button ghost" data-view="history">全部任务 <svg aria-hidden="true"><use href="#i-arrow"/></svg></button></div><div id="recent-jobs" class="job-list"></div></section><aside id="attention-panel" class="attention-panel" aria-live="polite"></aside></div>
+    </section>
 
-      <section class="recent-section page-width">
-        <div class="section-heading"><div><p>最近运行</p><h2>从上次离开的地方继续。</h2></div><button class="quiet-link" data-view="history">查看全部 <svg><use href="#i-chevron"/></svg></button></div>
-        <div id="recent-jobs" class="job-list"></div>
-      </section>
+    <section id="feedback-view" class="view simple-page page-width">
+      <div class="offline-intro"><button class="back-link" data-view="workspace"><svg aria-hidden="true"><use href="#i-chevron"/></svg>返回工作台</button><p class="kicker">调查通道</p><h1>负向反馈</h1><p>根据反馈数量选择处理方式。两种方式都以用户原文为线索，沿真实 Trace 核验问题与证据边界。</p></div>
+      <div class="offline-choice-grid"><article class="offline-choice"><span class="choice-icon"><svg aria-hidden="true"><use href="#i-table"/></svg></span><span class="channel-number">批次处理</span><h2>批量反馈</h2><p>导入包含 Session ID 和反馈原文的 CSV，一次创建一个批次，逐条生成可核对的反馈分析报告。</p><ul><li>可直接使用负向反馈候选 CSV</li><li>批次内保留每条反馈的结果与失败状态</li></ul><button class="channel-button" data-view="feedback-batch-new">导入反馈 CSV <svg aria-hidden="true"><use href="#i-arrow"/></svg></button></article><article class="offline-choice"><span class="choice-icon"><svg aria-hidden="true"><use href="#i-session"/></svg></span><span class="channel-number">聚焦一条反馈</span><h2>单条反馈</h2><p>输入 Session ID 与用户反馈原文，定位反馈前的执行过程和最早有证据的分叉点。</p><ul><li>适合紧急反馈与单例深挖</li><li>可填写请求关联 ID 解决重复文本定位</li></ul><button class="channel-button secondary" data-view="feedback-new">分析单条反馈 <svg aria-hidden="true"><use href="#i-arrow"/></svg></button></article></div>
+    </section>
+
+    <section id="offline-view" class="view simple-page page-width">
+      <div class="offline-intro"><button class="back-link" data-view="workspace"><svg aria-hidden="true"><use href="#i-chevron"/></svg>返回工作台</button><p class="kicker">调查通道</p><h1>离线题集</h1><p>使用已有机评结果作为调查起点。选择导入一批评测记录，或针对一个 Session 逐项核对。</p></div>
+      <div class="offline-choice-grid"><article class="offline-choice"><span class="choice-icon"><svg aria-hidden="true"><use href="#i-table"/></svg></span><span class="channel-number">整批评测</span><h2>批量 CSV</h2><p>导入评测结果，预检字段和评分状态，再按 Session 调查有明确失分的题目。</p><ul><li>适合整批题集和回归检查</li><li>支持失败项定位与选择性复跑</li></ul><button class="channel-button" data-view="csv-new">导入 CSV <svg aria-hidden="true"><use href="#i-arrow"/></svg></button></article><article class="offline-choice"><span class="choice-icon"><svg aria-hidden="true"><use href="#i-search"/></svg></span><span class="channel-number">聚焦一题</span><h2>单 Session</h2><p>输入一个 Session 的机评结果和被评答案，聚焦具体未命中事实的来源与传递。</p><ul><li>适合单题深挖和人工复核</li><li>按完整 Trace 生成证据链</li></ul><button class="channel-button secondary" data-view="session-new">创建单题任务 <svg aria-hidden="true"><use href="#i-arrow"/></svg></button></article></div>
+    </section>
+
+    <section id="feedback-batch-new-view" class="view form-view">
+      <div class="form-hero page-width narrow"><button class="back-link" data-view="feedback"><svg aria-hidden="true"><use href="#i-chevron"/></svg>返回负向反馈</button><p class="kicker">批次处理</p><h1>批量负向反馈</h1><p>导入五类原始文件目录或已筛选候选 CSV，按 Session 分批处理。不同 Session 可并行，同一 Session 内的反馈按顺序分析。</p></div>
+      <form id="feedback-batch-form" class="apple-form page-width form-width">
+        <div id="feedback-batch-errors" class="form-errors" role="alert" tabindex="-1" hidden></div>
+        <section class="form-section upload-section"><div class="form-section-title"><span>1</span><div><h2>导入反馈</h2><p>填写本机五类原始 CSV 目录，或上传已筛选的候选 CSV。两种方式选一种。</p></div></div><div class="form-fields"><label class="field"><span>五类原始文件目录</span><input id="feedback-batch-source-dir" type="text" autocomplete="off" placeholder="例如 /Users/you/Desktop/feedback-labeled"><small>目录内 CSV 需包含 session_id、request_query、label；系统复用负向筛选脚本。</small></label><label id="feedback-drop-zone" class="drop-zone" for="feedback-batch-file"><span class="upload-icon"><svg aria-hidden="true"><use href="#i-upload"/></svg></span><strong>或选择候选 CSV</strong><span>也可将文件拖到这里</span><small>上传文件最多 20 MB；所选批次最多 500 条反馈</small><input id="feedback-batch-file" type="file" accept=".csv,text/csv" hidden></label><div id="feedback-batch-preview" class="file-preview" hidden></div></div></section>
+        <section class="form-section"><div class="form-section-title"><span>2</span><div><h2>处理规则</h2><p>按文件顺序选择唯一 Session；同一 Session 的多条反馈会完整保留在本批次。创建后在批次详情点击“继续下一批”，系统会沿用本次输入快照并自动跳过已选 Session。</p></div></div><div class="form-fields"><div class="field-row"><label class="field"><span>起始 Session 序号</span><input id="feedback-batch-session-start" type="number" min="1" value="1" required></label><label class="field"><span>每批 Session 数</span><input id="feedback-batch-session-count" type="number" min="1" max="150" value="150" required><small>最多 150 个唯一 Session；所选反馈总数最多 500 条。</small></label></div><div class="field-row"><label class="field"><span>并行线程数</span><input id="feedback-batch-concurrency" type="number" min="1" max="16" value="3" required><small>不同 Session 并行；同一 Session 串行。</small></label><label class="field"><span>每条反馈最大调查轮数</span><input id="feedback-batch-max-rounds" type="number" min="1" max="200" value="12" required></label></div><label class="field"><span>历史轮次上限</span><input id="feedback-batch-max-turns" type="number" min="1" max="100" value="24" required></label></div></section>
+        <div class="submit-bar"><div><strong>创建反馈批次</strong><span>任务后台运行；报告和失败记录统一归档到本批次。</span></div><button class="pill-button primary submit" type="submit"><svg aria-hidden="true"><use href="#i-play"/></svg>开始批量分析</button></div>
+      </form>
+    </section>
+
+    <section id="feedback-new-view" class="view form-view">
+      <div class="form-hero page-width narrow"><button class="back-link" data-view="feedback"><svg aria-hidden="true"><use href="#i-chevron"/></svg>返回负向反馈</button><p class="kicker">单条分析</p><h1>单条负向反馈</h1><p>粘贴用户反馈，追溯历史要求、具体调用和交付结果，定位问题发生的位置。</p></div>
+      <div class="feedback-layout page-width">
+        <form id="feedback-form" class="apple-form">
+          <div id="feedback-errors" class="form-errors" role="alert" tabindex="-1" hidden></div>
+          <section class="form-section"><div class="form-section-title"><span>1</span><div><h2>定位这次反馈</h2><p>使用用户当时发送的完整原文。</p></div></div><div class="form-fields">
+            <label class="field"><span>Session ID <em>必填</em></span><input id="feedback-session-id" inputmode="numeric" autocomplete="off" placeholder="例如 32587255" required><small>系统自动查找历史对话，并读取反馈前的相关 Trace。</small></label>
+            <label class="field"><span>用户反馈原文 <em>必填</em></span><textarea id="feedback-query" rows="7" maxlength="50000" placeholder="粘贴用户指出问题的那条消息，包括日期、数值、附件标记等原文。" required></textarea><small>请保留原始措辞，便于准确定位反馈轮次。</small></label>
+          </div></section>
+          <details class="run-options"><summary>定位与运行选项 <span>自动查找数据 · 最多12轮调查</span></summary><div class="option-grid">
+            <label class="field"><span>请求关联 ID（可选）</span><input id="feedback-request-id" placeholder="同一反馈出现多次时填写"></label>
+            <label class="field"><span>最大调查轮数</span><input id="feedback-max-rounds" type="number" min="1" max="200" value="12" required></label>
+            <label class="field"><span>历史轮次上限</span><input id="feedback-max-turns" type="number" min="1" max="100" value="24" required></label>
+            <label class="field"><span>Agent ID（可选）</span><input id="feedback-agent-id" placeholder="Session自动查询未命中时使用"></label>
+            <label class="field"><span>Agent 类型</span><select id="feedback-agent-type"><option value="ida">IDA</option><option value="aide_solo">AIDE Solo</option><option value="aide_mix">AIDE Mix</option></select></label>
+            <label class="field full-width"><span>本地历史快照目录（可选）</span><input id="feedback-timeline-root" placeholder="留空自动查找；也可指定已有 session/detail-pages 的目录"></label>
+            <label class="field full-width"><span>本地 Trace 目录（可选）</span><input id="feedback-trace-root" placeholder="留空自动查找；也可指定已有 spans/details 的目录"></label>
+            <label class="check-field full-width"><input id="feedback-fetch-missing" type="checkbox" checked><span><strong>自动补拉所需 Trace</strong><small>本地证据不足时，按历史依赖补拉相关轮次。</small></span></label>
+          </div></details>
+          <div class="submit-bar"><div><strong>开始追溯问题</strong><span>任务后台运行，可随时查看进度。</span></div><button class="pill-button primary submit" type="submit"><svg aria-hidden="true"><use href="#i-play"/></svg>开始反馈分析</button></div>
+        </form>
+        <aside class="analysis-guide"><span class="guide-label">你会得到什么</span><h2>先看结论，<br>再核对证据。</h2><ol><li><strong>分析结论与问题归类</strong><span>快速了解问题位置及可能的形成过程。</span></li><li><strong>具体字段与执行证据</strong><span>追踪 Tool 参数、历史说明、返回及下游使用。</span></li><li><strong>核验结果与未决事项</strong><span>区分已经证实的事实与仍需验证的原因。</span></li></ol><p>反馈是调查线索。分析会结合当时的要求和实际记录逐项核验。</p></aside>
+      </div>
     </section>
 
     <section id="session-new-view" class="view form-view">
       <div class="form-hero page-width narrow">
-        <button class="back-link" data-view="workspace"><svg><use href="#i-chevron"/></svg>返回概览</button>
+        <button class="back-link" data-view="offline"><svg><use href="#i-chevron"/></svg>返回离线题集</button>
         <div class="form-kind-icon blue"><svg><use href="#i-session"/></svg></div>
         <p class="kicker">SINGLE SESSION</p>
         <h1>单 Session 归因</h1>
@@ -122,7 +154,7 @@
 
     <section id="csv-new-view" class="view form-view">
       <div class="form-hero page-width narrow">
-        <button class="back-link" data-view="workspace"><svg><use href="#i-chevron"/></svg>返回概览</button>
+        <button class="back-link" data-view="offline"><svg><use href="#i-chevron"/></svg>返回离线题集</button>
         <div class="form-kind-icon purple"><svg><use href="#i-table"/></svg></div>
         <p class="kicker">BATCH DATASET</p>
         <h1>批量 CSV 归因</h1>
@@ -142,19 +174,19 @@
           <div class="form-fields"><div class="mapping-list"><div><span>问题</span><svg><use href="#i-arrow"/></svg><strong>Query</strong></div><div><span>gt_attribution</span><svg><use href="#i-arrow"/></svg><strong>题目 GT</strong></div><div><span>ida_decompressed_data</span><svg><use href="#i-arrow"/></svg><strong>机评结果</strong></div><div><span>ida_url</span><svg><use href="#i-arrow"/></svg><strong>Session ID</strong></div><div><span>ida_答案</span><svg><use href="#i-arrow"/></svg><strong>IDA 答案</strong></div></div></div>
         </section>
         <details class="run-options"><summary>运行选项 <span>不同 Session 并行，同一 Session 串行</span></summary><div class="option-grid batch-options"><label class="field"><span>每个 GT 最大轮数</span><input id="csv-max-rounds" type="number" min="1" max="200" value="20"></label><label class="field"><span>Session 并发数</span><input id="csv-concurrency" type="number" inputmode="numeric" min="1" max="16" value="3"><small>默认3；建议先在3–5之间调节。</small></label><label class="field"><span>运行模式</span><select id="csv-run-mode"><option value="live">Live · Sophon</option><option value="offline">Offline · 回归样例</option></select></label><label class="check-field"><input id="fail-fast" type="checkbox"><span><strong>首错停止</strong><small>启用后并发数固定为1</small></span></label></div></details>
-        <div class="submit-bar"><div><strong>准备运行题集</strong><span>得分等于1的题直接跳过；其他题按未命中GT生成归因任务。</span></div><button class="pill-button primary submit purple" type="submit"><svg><use href="#i-play"/></svg>开始批量归因</button></div>
+        <div class="submit-bar"><div><strong>准备运行题集</strong><span>得分等于1的题直接跳过；只有明确的未命中GT进入归因，评测输入问题单独标注。</span></div><button class="pill-button primary submit purple" type="submit"><svg><use href="#i-play"/></svg>开始批量归因</button></div>
       </form>
     </section>
 
     <section id="reports-view" class="view simple-page page-width">
-      <div class="page-header"><div><p class="kicker">REPORT CENTER</p><h1>归因报告</h1><p>按批次时间进入，再按 Session 与 GT 查看报告、日志和校验结果。</p></div><label class="search-box"><svg><use href="#i-search"/></svg><span class="sr-only">搜索报告</span><input id="report-search" placeholder="搜索批次、Session 或任务 ID"></label></div>
-      <div class="report-hierarchy-hint" aria-label="报告存放层级"><span><svg><use href="#i-folder"/></svg>批次时间</span><svg><use href="#i-chevron"/></svg><span>Session</span><svg><use href="#i-chevron"/></svg><span>GT</span><svg><use href="#i-chevron"/></svg><span>报告</span></div>
+      <div class="page-header"><div><p class="kicker">REPORT CENTER</p><h1>归因报告</h1><p>统一查看负向反馈与评测归因的结论、证据和运行记录。</p></div><label class="search-box"><svg><use href="#i-search"/></svg><span class="sr-only">搜索报告</span><input id="report-search" placeholder="搜索批次、Session 或任务 ID"></label></div>
+      <div class="report-hierarchy-hint" aria-label="报告存放层级"><span><svg><use href="#i-folder"/></svg>运行批次</span><svg><use href="#i-chevron"/></svg><span>Session</span><svg><use href="#i-chevron"/></svg><span>分析项</span><svg><use href="#i-chevron"/></svg><span>报告与证据</span></div>
       <div id="report-jobs" class="job-list"></div>
     </section>
 
     <section id="history-view" class="view simple-page page-width">
       <div class="page-header"><div><p class="kicker">RUN HISTORY</p><h1>运行历史</h1><p>查看所有任务、报告与失败恢复信息。</p></div><label class="search-box"><svg><use href="#i-search"/></svg><span class="sr-only">搜索任务</span><input id="history-search" placeholder="搜索 Session 或任务 ID"></label></div>
-      <div id="history-jobs" class="job-list"></div>
+      <div class="list-filters"><label>任务类型<select id="history-type"><option value="all">全部类型</option><option value="feedback">单条反馈</option><option value="feedback-batch">批量反馈</option><option value="session">单 Session</option><option value="csv">批量 CSV</option></select></label><label>运行状态<select id="history-status"><option value="all">全部状态</option><option value="running">运行中</option><option value="completed">已完成</option><option value="failed">失败 / 部分失败</option></select></label><button class="button ghost" id="refresh-jobs">刷新列表</button></div><div id="history-jobs" class="job-list"></div>
     </section>
 
     <section id="detail-view" class="view simple-page page-width wide">
@@ -164,12 +196,12 @@
           <div><p class="kicker">THIS BATCH ONLY</p><h2>本批次 Session</h2><p id="batch-session-summary"></p></div>
           <div class="batch-session-tools">
             <label class="search-box compact"><svg><use href="#i-search"/></svg><span class="sr-only">搜索本批次 Session</span><input id="batch-session-search" placeholder="搜索 Session ID 或 CSV 行"></label>
-            <select id="batch-session-status" aria-label="筛选 Session 状态"><option value="all">全部状态</option><option value="queued">等待处理</option><option value="running">运行中</option><option value="completed">已完成</option><option value="completed_with_evidence_gaps">Trace有缺口</option><option value="failed">失败</option><option value="skipped">已跳过</option><option value="source_run_failed">源任务未运行</option></select>
+            <select id="batch-session-status" aria-label="筛选 Session 状态"><option value="all">全部状态</option><option value="queued">等待处理</option><option value="running">运行中</option><option value="completed">已完成</option><option value="completed_with_evidence_gaps">Trace有缺口</option><option value="failed">失败</option><option value="skipped">已跳过</option><option value="evaluation_input_issue">评测输入问题</option><option value="source_run_failed">源任务未运行</option></select>
           </div>
         </header>
         <div id="batch-session-stats" class="batch-session-stats"></div>
         <div id="batch-session-selection" class="batch-session-selection" hidden>
-          <div><strong id="batch-selection-count" role="status" aria-live="polite" aria-atomic="true">已选择 0 个 Session</strong><small>将创建新的 Attempt，并重跑所选 Session 对应 CSV 行中的全部未命中 GT。</small></div>
+          <div><strong id="batch-selection-count" role="status" aria-live="polite" aria-atomic="true">已选择 0 个 Session</strong><small>将创建新一次运行，并重跑所选 Session 对应 CSV 行中的全部未命中 GT。</small></div>
           <div class="batch-selection-actions"><button type="button" class="button ghost compact-button" id="batch-select-visible">选择当前筛选结果</button><button type="button" class="button ghost compact-button" id="batch-clear-selection">清空</button><button type="button" class="button retry-primary compact-button" id="batch-retry-selected" disabled><svg><use href="#i-retry"/></svg>重跑所选 Session</button></div>
         </div>
         <div id="batch-session-grid" class="batch-session-grid"></div>
@@ -184,6 +216,7 @@
         <section class="artifact-panel">
           <header id="report-context" class="report-context"></header>
           <div class="artifact-tabs" id="artifact-tabs" aria-label="GT 产物"></div>
+          <div id="artifact-actions" class="artifact-actions" hidden><span id="artifact-filename"></span><div><button id="copy-artifact" class="button ghost" type="button">复制内容</button><button id="download-artifact" class="button ghost" type="button">下载文件</button></div></div>
           <article id="artifact-content" class="artifact-content"><div class="empty-state"><svg><use href="#i-file"/></svg><h3>选择一个 Session 与 GT</h3><p>报告、执行摘要、Agent 日志和校验结果将在这里显示。</p></div></article>
         </section>
       </div>
@@ -199,11 +232,11 @@
         <div class="retry-dialog-head"><span class="retry-icon"><svg><use href="#i-retry"/></svg></span><div><p class="kicker">NEW ATTEMPT</p><h2 id="retry-dialog-title">复跑失败任务</h2></div></div>
         <p id="retry-dialog-description" class="retry-dialog-description"></p>
         <div id="retry-selection-preview" class="retry-selection-preview"></div>
-        <label class="field"><span>最大调查轮数</span><input id="retry-max-rounds" type="number" min="1" max="200" value="20" required><small>这是新 Attempt 的上限，不会修改旧任务。</small></label>
+        <label class="field"><span>最大调查轮数</span><input id="retry-max-rounds" type="number" min="1" max="200" value="20" required><small>这是新一次运行的调查上限，旧任务会保留。</small></label>
         <label class="field" id="retry-concurrency-field" hidden><span>Session 并发数</span><input id="retry-concurrency" type="number" inputmode="numeric" min="1" max="16" value="3" required><small>不同 Session 并行；同一 Session 的多个 GT 仍按顺序执行。</small></label>
         <label class="field"><span>复跑原因（可选）</span><textarea id="retry-reason" rows="3" placeholder="例如：修复覆盖策略后，仅重跑失败GT"></textarea></label>
         <div id="retry-errors" class="form-errors" role="alert" tabindex="-1" hidden></div>
-        <div class="retry-dialog-actions"><button type="button" class="button ghost" id="retry-cancel">取消</button><button type="submit" class="pill-button primary" id="retry-submit">创建新 Attempt</button></div>
+        <div class="retry-dialog-actions"><button type="button" class="button ghost" id="retry-cancel">取消</button><button type="submit" class="pill-button primary" id="retry-submit">创建新一次运行</button></div>
       </form>
     </dialog>
 

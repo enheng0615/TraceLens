@@ -12,6 +12,7 @@ export function renderWorkflowSummary(manifest) {
     `- 输入行数：${manifest.counts.inputRows}`,
     `- 满分跳过：${manifest.counts.fullScoreSkipped ?? 0}`,
     `- 源任务未成功运行：${manifest.counts.sourceRunFailed ?? 0}`,
+    `- 评测输入问题：${manifest.counts.evaluationInputIssues ?? 0}`,
     `- Session并发数：${manifest.configuration.concurrency ?? 1}`,
     `- 完成：${manifest.counts.completed}`,
     `- 其中Trace局部不完整：${manifest.counts.completedWithEvidenceGaps ?? 0}`,

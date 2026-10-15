@@ -19,10 +19,25 @@ function stageLabel(stage) {
     ingestion: "Trace采集",
     preparation: "归因准备",
     investigation: "Trace调查",
+    scoring_gap: "评分差距定位",
+    final_report_validation: "最终报告校验",
     process_start: "任务进程启动",
     pre_workflow: "工作流启动前",
     web_runtime: "Web运行状态恢复",
   })[stage] || stage || "未知阶段";
+}
+
+function inferManifestStage(item) {
+  if (!item) return null;
+  if (item?.stage) return item.stage;
+  const code = String(item?.error?.code ?? "");
+  const message = String(item?.error?.message ?? "");
+  if (/INVESTIGATION|coverage/i.test(`${code} ${message}`)) return "investigation";
+  if (/Scoring Gap|actual-answer fact evidence/i.test(message)) return "scoring_gap";
+  if (/Final RCA|evidence consistency/i.test(message)) return "final_report_validation";
+  if (/TRACE_PARTIAL|SOPHON|SESSION_(?:NOT_FOUND|DIRECT_LOOKUP_FAILED)/i.test(code)) return "ingestion";
+  if (/CASE_TRACE_MISMATCH/i.test(code)) return "preparation";
+  return "rca_runtime";
 }
 
 async function inspectCsv(job) {
@@ -38,12 +53,18 @@ async function inspectCsv(job) {
       rowNumber: record.rowNumber,
       ...record.sourceRunStatus,
     }));
+    const evaluationInputStatuses = parsed.records.filter((record) => record.evaluationInputStatus).map((record) => ({
+      rowNumber: record.rowNumber,
+      ...record.evaluationInputStatus,
+    }));
     return {
       inputRows: parsed.records.length,
       fullScoreRows: parsed.records.filter((record) => isFullScore(record.score)).length,
-      actionableRows: parsed.records.filter((record) => !isFullScore(record.score) && !record.sourceRunStatus).length,
+      actionableRows: parsed.records.filter((record) => !isFullScore(record.score) && !record.sourceRunStatus && !record.evaluationInputStatus).length,
       sourceRunFailedRows: sourceRunStatuses.length,
       sourceRunStatuses,
+      evaluationInputIssueRows: evaluationInputStatuses.length,
+      evaluationInputStatuses,
       issueCount: issues.length,
       issues,
     };
@@ -67,11 +88,12 @@ export async function buildJobDiagnosis(job, manifest = null) {
   const firstInputIssue = csvInspection?.issues?.[0];
   const rawPrimary = cleanErrorPrefix(firstErrorLine(job.stderr));
   const failureContext = job.failureContext;
+  const manifestIsAuthoritative = manifestFailures.length > 0 && ["completed_with_failures", "completed"].includes(String(job.status));
 
-  let stage = failureContext?.stage || firstManifestFailure?.stage || (firstInputIssue ? "input_validation" : "pre_workflow");
-  let code = failureContext?.code || firstManifestFailure?.error?.code || firstInputIssue?.code || null;
-  let message = failureContext?.message || firstManifestFailure?.error?.message || firstInputIssue?.message || rawPrimary;
-  let remediation = failureContext?.remediation || firstManifestFailure?.error?.remediation || (!firstManifestFailure ? firstInputIssue?.remediation : null) || "查看Web日志和工作流产物，修复输入或运行环境后创建新的Attempt。";
+  let stage = manifestIsAuthoritative ? inferManifestStage(firstManifestFailure) : failureContext?.stage || inferManifestStage(firstManifestFailure) || (firstInputIssue ? "input_validation" : "pre_workflow");
+  let code = manifestIsAuthoritative ? firstManifestFailure?.error?.code : failureContext?.code || firstManifestFailure?.error?.code || firstInputIssue?.code || null;
+  let message = manifestIsAuthoritative ? firstManifestFailure?.error?.message : failureContext?.message || firstManifestFailure?.error?.message || firstInputIssue?.message || rawPrimary;
+  let remediation = (manifestIsAuthoritative ? firstManifestFailure?.error?.remediation : failureContext?.remediation || firstManifestFailure?.error?.remediation) || (!firstManifestFailure ? firstInputIssue?.remediation : null) || "查看Web日志和工作流产物，修复输入或运行环境后创建新的Attempt。";
   let impact = failureContext?.impact || (manifest
     ? `工作流记录了${manifestFailures.length}个失败项；其他已完成项和日志保持不变。`
     : "工作流Manifest尚未创建，失败发生在CSV解析或任务初始化阶段；没有进入Trace归因。");
@@ -86,6 +108,10 @@ export async function buildJobDiagnosis(job, manifest = null) {
     stage = manifest ? stage : "pre_workflow";
     code ||= "NETWORK_FAILURE";
     remediation = "检查内网、VPN、Sophon网关和模型连通性；临时中断可Resume，代码或配置变化应创建新Attempt。";
+  } else if (!failureContext && code === "SESSION_DIRECT_LOOKUP_FAILED") {
+    const count = manifestFailures.filter((item) => item.error?.code === "SESSION_DIRECT_LOOKUP_FAILED").length;
+    impact = `有${count}个Session未命中Sophon SESSION_INDEX，使用CSV URL中的agentId直接查询仍失败；其他Session不受影响。`;
+    remediation = "核对该Session在Sophon tenant=data、agent-type=ida、CSV agentId和当前账号下是否可访问。该错误不再自动向ES保留期外回溯；修复权限或上游索引后创建新Attempt。";
   } else if (!failureContext && code === "SESSION_NOT_FOUND") {
     const count = manifestFailures.filter((item) => item.error?.code === "SESSION_NOT_FOUND").length;
     impact = `有${count}个待归因输入已成功解析Session ID，但Sophon Session查询返回0条；其他失败类型和已完成项仍分别保留。`;

@@ -126,6 +126,14 @@ const server = createServer(async (request, response) => {
       sendJson(response, 202, { job: await store.createSession(await readJsonBody(request)) });
       return;
     }
+    if (request.method === "POST" && pathname === "/api/jobs/feedback") {
+      sendJson(response, 202, { job: await store.createFeedback(await readJsonBody(request)) });
+      return;
+    }
+    if (request.method === "POST" && pathname === "/api/jobs/feedback-batch") {
+      sendJson(response, 202, { job: await store.createFeedbackBatch(await readJsonBody(request)) });
+      return;
+    }
     if (request.method === "POST" && pathname === "/api/jobs/csv") {
       sendJson(response, 202, { job: await store.createCsv(await readJsonBody(request)) });
       return;
@@ -141,6 +149,13 @@ const server = createServer(async (request, response) => {
     const retry = pathname.match(/^\/api\/jobs\/([^/]+)\/retry$/);
     if (request.method === "POST" && retry) {
       const job = await store.createRetry(retry[1], await readJsonBody(request));
+      if (!job) return sendJson(response, 404, { error: "任务不存在" });
+      sendJson(response, 202, { job });
+      return;
+    }
+    const nextFeedbackBatch = pathname.match(/^\/api\/jobs\/([^/]+)\/next-feedback-batch$/);
+    if (request.method === "POST" && nextFeedbackBatch) {
+      const job = await store.createNextFeedbackBatch(nextFeedbackBatch[1], await readJsonBody(request));
       if (!job) return sendJson(response, 404, { error: "任务不存在" });
       sendJson(response, 202, { job });
       return;

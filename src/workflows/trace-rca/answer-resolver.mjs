@@ -18,6 +18,14 @@ function larkDocUrls(value) {
   return [...new Set(String(value ?? "").match(/https:\/\/[^\s)\]"']*larkoffice\.com\/docx\/[^\s)\]"']+/gi) ?? [])];
 }
 
+function deliveredAttachmentSplit(value) {
+  const text = String(value ?? "");
+  const marker = /\n(?:---\s*\n+)?##\s*附件内容[:：]/u;
+  const match = marker.exec(text);
+  if (!match) return null;
+  return { body: text.slice(0, match.index), attachments: text.slice(match.index) };
+}
+
 function toolArguments(span) {
   return parseJson(span?.input)?.arguments ?? {};
 }
@@ -131,6 +139,52 @@ export async function resolveEvaluatedAnswer({
         },
       };
     }
+  }
+
+  // Evaluation exports commonly append delivered attachment bodies after the
+  // exact AGENT answer. Preserve the scored CSV answer while proving its prefix
+  // is the immutable Trace answer; do not use fuzzy similarity.
+  if (source && agent && source.startsWith(agent)) {
+    const appended = source.slice(agent.length);
+    const deliveryMarker = /^\s*(?:---\s*)?(?:##\s*附件内容|附件内容|飞书文档链接|\|)/.test(appended);
+    if (agent.length >= 200 && appended.trim() && deliveryMarker) {
+      return {
+        content: String(suppliedAnswer),
+        resolution: "trace_answer_exact_prefix_with_delivered_artifacts",
+        accepted: true,
+        provenance: {
+          deliveryAgentSpanId: traceExchange?.spanId ?? null,
+          alignment: {
+            method: "exact_prefix_with_delivered_artifacts",
+            suppliedChars: source.length, traceAnswerChars: agent.length,
+            appendedArtifactChars: appended.length,
+          },
+        },
+      };
+    }
+  }
+
+  // The evaluated export may append attachment bodies while also normalizing
+  // harmless Markdown whitespace in the visible answer. Split at the explicit
+  // delivery marker, then require exact rendered-Markdown identity for the
+  // complete body. This composes two deterministic rules without fuzzy match.
+  const delivered = deliveredAttachmentSplit(suppliedAnswer);
+  if (delivered && agent && markdownDisplayExact(delivered.body, agent)) {
+    return {
+      content: String(suppliedAnswer),
+      resolution: "trace_answer_markdown_exact_with_delivered_artifacts",
+      accepted: true,
+      provenance: {
+        deliveryAgentSpanId: traceExchange?.spanId ?? null,
+        alignment: {
+          method: "markdown_exact_body_with_delivered_artifacts",
+          suppliedChars: source.length,
+          traceAnswerChars: agent.length,
+          appendedArtifactChars: delivered.attachments.length,
+          normalizedBodyChars: normalizeMarkdownLinkTargets(delivered.body).length,
+        },
+      },
+    };
   }
 
   if (larkDocUrls(suppliedAnswer).length) {

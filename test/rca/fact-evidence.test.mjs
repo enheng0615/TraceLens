@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   buildFactEvidenceGroup,
   evidenceSatisfiesFactGroup,
+  findCompositeFactGroupEvidence,
   normalizeEvidenceText,
 } from "../../src/rca/fact-evidence.mjs";
 
@@ -51,4 +52,14 @@ test("does not count search arguments themselves as source evidence", () => {
 
 test("normalizes Markdown presentation without removing semantic punctuation", () => {
   assert.equal(normalizeEvidenceText("| **短期 借款** | 492.29亿元 |"), "短期借款492.29亿元");
+});
+
+test("composes one answer fact from multiple source-bearing evidence records", () => {
+  const group = buildFactEvidenceGroup("| 工作上的刚需 | 满意度20.72% |", 0);
+  const result = findCompositeFactGroupEvidence([
+    { evidenceId: "EV-1", ...entry("get_tool_exchange", { request: {}, response: "工作上的刚需被纳入计算" }) },
+    { evidenceId: "EV-2", ...entry("get_span_content", { content: "该标签满意度为20.72%" }) },
+  ], group);
+  assert.equal(result.complete, true);
+  assert.deepEqual(result.evidenceIds, ["EV-1", "EV-2"]);
 });

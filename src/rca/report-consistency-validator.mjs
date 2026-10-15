@@ -17,6 +17,12 @@ const VISIBLE_SCOPE_QUALIFIERS = [
   /现有可观察(?:范围|边界)/,
   /可见Span/,
 ];
+const ABSENCE_DISCLAIMER_PATTERNS = [
+  /无法证明.*(?:无|未|不存在|从未)/i,
+  /不能(?:证明|断言|确认).*(?:无|未|不存在|从未)/i,
+  /不足以(?:证明|断言|确认).*(?:无|未|不存在|从未)/i,
+  /现有证据不支持.*(?:无|未|不存在|从未)/i,
+];
 
 function clauses(value) {
   return String(value ?? "").split(/[。；;，,\n]/).map((item) => item.trim()).filter(Boolean);
@@ -57,7 +63,24 @@ function isMeaningfulQuery(query) {
 }
 
 function saysAbsence(clause) {
+  if (ABSENCE_DISCLAIMER_PATTERNS.some((pattern) => pattern.test(clause))) return false;
   return ABSENCE_PATTERNS.some((pattern) => pattern.test(clause));
+}
+
+function isLowSpecificityNumericQuery(query) {
+  return /^[-+]?\d+(?:\.\d+)?$/u.test(String(query ?? "").trim());
+}
+
+function claimsLiteralAbsence(clause) {
+  return /(?:字面|字符|字符串|任何位置|零次|0次|完全未出现|一次都未)/i.test(clause);
+}
+
+function positiveMatchContradictsAbsence(query, clause) {
+  // A pure number frequently occurs inside timestamps, ids and unrelated Tool
+  // payloads. Positive lexical hits cannot disprove a scoped semantic claim
+  // such as "未发现作为VaseVolume范围使用的820". They only contradict an
+  // explicit claim that the literal characters never occurred anywhere.
+  return !isLowSpecificityNumericQuery(query) || claimsLiteralAbsence(clause);
 }
 
 function claimsWholeTrace(clause) {
@@ -103,7 +126,7 @@ export function validateReportEvidenceConsistency(report, ledger) {
       if (!query || !isMeaningfulQuery(query) || !Number.isFinite(matches)) continue;
       if (matches > 0) {
         for (const clause of textClauses.filter((item) => queryMentionedExactly(item, query))) {
-          if (saysAbsence(clause)) {
+          if (saysAbsence(clause) && positiveMatchContradictsAbsence(query, clause)) {
             errors.push(`${evidenceId} reports ${matches} matches for ${JSON.stringify(query)} but cited claim says absence: ${clause}`);
           }
         }
@@ -122,7 +145,7 @@ export function validateReportEvidenceConsistency(report, ledger) {
     const query = String(entry.arguments?.query ?? "");
     if (!isMeaningfulQuery(query)) continue;
     for (const clause of reportTextClauses.filter((item) => queryMentionedExactly(item, query))) {
-      if (claimsWholeTrace(clause) && saysAbsence(clause)) {
+      if (claimsWholeTrace(clause) && saysAbsence(clause) && positiveMatchContradictsAbsence(query, clause)) {
         errors.push(`${entry.evidenceId} reports ${entry.result.totalMatches} matches for ${JSON.stringify(query)} but report makes a whole-Trace absence claim: ${clause}`);
       }
     }

@@ -1,9 +1,55 @@
 import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
+import { assessEmbeddedResultTruncation } from "../ingestion/sophon-trace/truncation-assessment.mjs";
 
 const PRIMARY_TYPES = new Set(["AGENT", "GENERATION", "TOOL"]);
 const MAX_CONTENT_CHARS = 12_000;
+
+function isAuditableExecutionSpan(span) {
+  return span?.spanType === "TOOL" || (span?.spanType === "SPAN" && /skill/i.test(String(span?.name ?? "")));
+}
+
+function isPrimaryExecutionSpan(span) {
+  return PRIMARY_TYPES.has(span?.spanType) || isAuditableExecutionSpan(span);
+}
+
+function isNumericQuery(query) {
+  return /^[-+]?\d+(?:\.\d+)?$/u.test(String(query ?? "").trim());
+}
+
+function isAsciiIdentifierOrNumberChar(value) {
+  return value !== undefined && /[A-Za-z0-9_.]/u.test(value);
+}
+
+/**
+ * Return deterministic match offsets. Numeric GT atoms need token boundaries:
+ * `820` may match `<=820`, but must not match a timestamp, decimal, or long ID.
+ * Non-numeric searches preserve the existing exact case-insensitive semantics.
+ */
+function findMatchOffsets(content, query) {
+  const lower = String(content ?? "").toLocaleLowerCase();
+  const needle = String(query ?? "").toLocaleLowerCase();
+  const numeric = isNumericQuery(query);
+  const offsets = [];
+  let cursor = 0;
+  while (cursor <= lower.length) {
+    const index = lower.indexOf(needle, cursor);
+    if (index === -1) break;
+    const end = index + needle.length;
+    const unsignedInsideSignedValue = numeric
+      && !/^[+-]/u.test(needle)
+      && /[+-]/u.test(lower[index - 1] ?? "");
+    const bounded = !numeric || (
+      !unsignedInsideSignedValue
+      && !isAsciiIdentifierOrNumberChar(lower[index - 1])
+      && !isAsciiIdentifierOrNumberChar(lower[end])
+    );
+    if (bounded) offsets.push(index);
+    cursor = index + Math.max(needle.length, 1);
+  }
+  return offsets;
+}
 
 function sha256(value) {
   return createHash("sha256").update(String(value ?? "")).digest("hex");
@@ -47,7 +93,7 @@ function walkTree(node, parentId = null, depth = 0, result = new Map()) {
 }
 
 function normalizeScope(scope) {
-  if (!scope || scope === "primary") return (span) => PRIMARY_TYPES.has(span.spanType);
+  if (!scope || scope === "primary") return isPrimaryExecutionSpan;
   if (scope === "all") return () => true;
   if (Array.isArray(scope)) {
     const allowed = new Set(scope.map((item) => String(item).toUpperCase()));
@@ -67,9 +113,24 @@ function evidenceRef(span, field, start, end) {
     startOffset: start,
     endOffset: end,
     contentSha256: sha256(content),
-    rawPath: span.rawPath,
+    rawPath: field === "output" ? (span.outputRawPath ?? span.rawPath) : span.rawPath,
     jsonPath: `$.data.${field}`,
   };
+}
+
+async function jsonFiles(dir) {
+  const result = [];
+  for (const entry of await readdir(dir, { withFileTypes: true })) {
+    if (entry.isSymbolicLink()) throw new Error("Symbolic links are not allowed in Trace storage");
+    if (entry.isDirectory()) result.push(...await jsonFiles(path.join(dir, entry.name)));
+    else if (entry.name.endsWith(".json")) result.push(path.join(dir, entry.name));
+  }
+  return result.sort();
+}
+
+async function optionalJson(root, name) {
+  try { return JSON.parse(await readFile(path.join(root, name), "utf8")); }
+  catch (error) { if (error.code === "ENOENT") return null; throw error; }
 }
 
 export class TraceRepository {
@@ -80,12 +141,22 @@ export class TraceRepository {
     this.relations = relations;
     this.manifest = manifest;
     this.integrity = integrity;
+    this.structureComplete = spans.length > 0 && relations.size === spans.length
+      && [...relations.keys()].every((id) => this.byId.has(id));
   }
 
-  static async open(root) {
+  static async open(root, { episode: requestedEpisode } = {}) {
     const resolved = path.resolve(root);
+    const legacyPlan = await optionalJson(resolved, "selection-plan.json");
+    const episode = requestedEpisode ?? await optionalJson(resolved, "episode-manifest.json") ?? (legacyPlan ? {
+      schemaVersion: "feedback-episode-v1", sessionId: legacyPlan.sessionId,
+      feedbackReceivedAt: legacyPlan.feedbackReceivedAt,
+      traceIds: legacyPlan.selectedTurns.map((t) => t.traceId), scope: "selected_pre_feedback_turns",
+    } : null);
+    if (episode && (!episode.sessionId || !Number.isFinite(episode.feedbackReceivedAt) || episode.feedbackReceivedAt <= 0 || !episode.traceIds?.length)) throw new Error("Invalid feedback episode manifest");
+    const traceIds = episode ? new Set(episode.traceIds) : null;
     const detailDir = path.join(resolved, "spans", "details");
-    const files = (await readdir(detailDir)).filter((file) => file.endsWith(".json")).sort();
+    const files = await jsonFiles(detailDir);
     const expandedBySpanId = new Map();
     const expandedDir = path.join(resolved, "expanded-tool-results");
     try {
@@ -98,39 +169,55 @@ export class TraceRepository {
       }
     } catch {}
     const spans = [];
+    const loadedIds = new Set();
     for (const file of files) {
-      const wrapper = JSON.parse(await readFile(path.join(detailDir, file), "utf8"));
+      const wrapper = JSON.parse(await readFile(file, "utf8"));
       const data = wrapper.data;
       if (!data?.id) throw new Error(`Invalid span detail: ${file}`);
+      if (traceIds && !traceIds.has(data.traceId)) continue;
+      if (episode && (String(data.sessionId) !== String(episode.sessionId)
+        || !Number.isFinite(data.startTime) || !Number.isFinite(data.endTime)
+        || data.startTime <= 0 || data.endTime < data.startTime
+        || data.startTime >= episode.feedbackReceivedAt || data.endTime > episode.feedbackReceivedAt)) throw new Error(`Span violates feedback episode boundary: ${data.id}`);
+      if (loadedIds.has(data.id)) throw new Error(`Duplicate Span: ${data.id}`);
+      loadedIds.add(data.id);
       const expanded = expandedBySpanId.get(String(data.id));
       spans.push({
         ...data,
         ...(expanded ? { output: expanded.output, expandedToolResult: true } : {}),
-        rawPath: expanded?.rawPath ?? path.join(detailDir, file),
+        rawPath: file,
+        ...(expanded ? { outputRawPath: expanded.rawPath } : {}),
       });
     }
+    if (!spans.length) throw new Error("Trace repository has no readable Spans");
 
     const treeDir = path.join(resolved, "traces", "trees");
     const treeFiles = (await readdir(treeDir)).filter((file) => file.endsWith(".json")).sort();
     const relations = new Map();
     for (const file of treeFiles) {
       const wrapper = JSON.parse(await readFile(path.join(treeDir, file), "utf8"));
+      if (traceIds && !spans.some((span) => span.id === wrapper.data?.id)) continue;
       walkTree(wrapper.data, null, 0, relations);
     }
 
-    const readOptional = async (name) => {
-      try {
-        return JSON.parse(await readFile(path.join(resolved, name), "utf8"));
-      } catch {
-        return null;
-      }
-    };
+    const integrity = await optionalJson(resolved, "integrity-report.json") ?? await optionalJson(resolved, "integrity-audit.json");
+    const spanIds = new Set(spans.map((s) => s.id));
+    if (episode && (relations.size !== spanIds.size || [...relations.keys()].some((id) => !spanIds.has(id))
+      || [...traceIds].some((id) => !spans.some((s) => s.traceId === id)))) throw new Error("Episode Tree/Detail/Trace membership mismatch");
+    const unresolved = spans.filter((span) => assessEmbeddedResultTruncation(span.output).some((a) => a.classification === "source_payload_missing")
+      || /(?:\[truncated\]|<truncated>|\.\.\.truncated(?: due to length limit)?)\s*$/i.test(String(span.output ?? ""))).map((s) => s.id);
+    const auditedIntegrity = episode ? {
+      ...integrity,
+      result: unresolved.length ? "partial_analyzable" : "selected_structure_audited",
+      scopeNote: "Selected Trace topology checked locally; upstream payload completeness is not proven by matching Tree/Detail IDs.",
+      expandedToolResults: { ...integrity?.expandedToolResults, unresolvedSpanIds: [...new Set([...unresolved, ...(integrity?.expandedToolResults?.unresolvedSpanIds ?? [])])] },
+    } : integrity;
     return new TraceRepository({
       root: resolved,
       spans,
       relations,
-      manifest: await readOptional("manifest.json"),
-      integrity: (await readOptional("integrity-report.json")) ?? (await readOptional("integrity-audit.json")),
+      manifest: episode ?? await optionalJson(resolved, "manifest.json"),
+      integrity: auditedIntegrity,
     });
   }
 
@@ -150,7 +237,7 @@ export class TraceRepository {
       traceIds: [...new Set(this.spans.map((span) => span.traceId))],
       spanCount: this.spans.length,
       typeCounts,
-      primarySpanCount: this.spans.filter((span) => PRIMARY_TYPES.has(span.spanType)).length,
+      primarySpanCount: this.spans.filter(isPrimaryExecutionSpan).length,
       startTime: Number.isFinite(minStart) ? minStart : first?.startTime,
       endTime: Number.isFinite(maxEnd) ? maxEnd : last?.endTime,
       durationMs: Number.isFinite(minStart) && Number.isFinite(maxEnd) ? maxEnd - minStart : null,
@@ -174,12 +261,18 @@ export class TraceRepository {
       toolNames: Object.entries(nameCounts)
         .filter(([name]) => this.spans.some((span) => span.spanType === "TOOL" && span.name === name))
         .map(([name, count]) => ({ name, count })),
+      skillNames: Object.entries(nameCounts)
+        .filter(([name]) => this.spans.some((span) => span.spanType === "SPAN" && /skill/i.test(String(span.name ?? "")) && span.name === name))
+        .map(([name, count]) => ({ name, count })),
+      executionNames: Object.entries(nameCounts)
+        .filter(([name]) => this.spans.some((span) => isAuditableExecutionSpan(span) && span.name === name))
+        .map(([name, count]) => ({ name, count })),
     };
   }
 
   listExecutionSteps({ maxSummaryChars = 360 } = {}) {
     return this.spans
-      .filter((span) => PRIMARY_TYPES.has(span.spanType))
+      .filter(isPrimaryExecutionSpan)
       .map((span, index) => {
         const relation = this.relations.get(span.id) ?? {};
         return {
@@ -203,7 +296,6 @@ export class TraceRepository {
   search({ query, scope = "primary", fields = ["input", "output"], maxHits = 30, contextChars = 180 }) {
     if (!query || typeof query !== "string") throw new Error("search_trace requires a non-empty query");
     const filter = normalizeScope(scope);
-    const needle = query.toLocaleLowerCase();
     const hits = [];
     const corpusFingerprint = createHash("sha256");
     let searchedSpans = 0;
@@ -218,11 +310,7 @@ export class TraceRepository {
         corpusFingerprint.update(`${span.id}\0${field}\0${sha256(content)}\n`);
         searchedFields += 1;
         searchedChars += content.length;
-        const lower = content.toLocaleLowerCase();
-        let cursor = 0;
-        while (cursor <= lower.length) {
-          const index = lower.indexOf(needle, cursor);
-          if (index === -1) break;
+        for (const index of findMatchOffsets(content, query)) {
           if (hits.length < maxHits) {
             const start = Math.max(0, index - contextChars);
             const end = Math.min(content.length, index + query.length + contextChars);
@@ -233,7 +321,6 @@ export class TraceRepository {
               excerpt: redact(content.slice(start, end)),
             });
           }
-          cursor = index + Math.max(query.length, 1);
         }
       }
     }
@@ -259,6 +346,7 @@ export class TraceRepository {
     return {
       query,
       exactCaseInsensitive: true,
+      matchMode: isNumericQuery(query) ? "exact_numeric_token" : "exact_case_insensitive_substring",
       scope,
       fields,
       coverage: {
@@ -267,7 +355,12 @@ export class TraceRepository {
         searchedChars,
         complete: true,
         visibleCorpusComplete: true,
-        negativeEvidenceEligible: unknownSegments.length === 0,
+        negativeEvidenceEligible: searchedSpans > 0 && unknownSegments.length === 0
+          && this.structureComplete
+          && (!Number.isInteger(this.integrity?.counts?.spanDetails) || this.integrity.counts.spanDetails === this.spans.length)
+          && ["complete", "complete_no_observed_truncation", "complete_with_recovered_truncation"].includes(this.integrity?.result)
+          && this.manifest?.scope !== "selected_pre_feedback_turns",
+        searchScope: this.manifest?.scope ?? "local_repository",
         unknownSegments,
         corpusSha256: corpusFingerprint.digest("hex"),
       },
@@ -278,19 +371,11 @@ export class TraceRepository {
   }
 
   countMatches({ query, filter, fields }) {
-    const needle = query.toLocaleLowerCase();
     let count = 0;
     for (const span of this.spans) {
       if (!filter(span)) continue;
       for (const field of fields) {
-        const lower = String(span[field] ?? "").toLocaleLowerCase();
-        let cursor = 0;
-        while (cursor <= lower.length) {
-          const index = lower.indexOf(needle, cursor);
-          if (index === -1) break;
-          count += 1;
-          cursor = index + Math.max(needle.length, 1);
-        }
+        count += findMatchOffsets(span[field], query).length;
       }
     }
     return count;
@@ -299,8 +384,8 @@ export class TraceRepository {
   getSpanContent({ spanId, field = "output", start = 0, length = 6000 }) {
     const span = this.byId.get(spanId);
     if (!span) throw new Error(`Unknown spanId: ${spanId}`);
-    if (!PRIMARY_TYPES.has(span.spanType)) {
-      throw new Error("Direct content reading is limited to AGENT/GENERATION/TOOL spans in this test version");
+    if (!isPrimaryExecutionSpan(span)) {
+      throw new Error("Direct content reading is limited to AGENT/GENERATION/TOOL/Skill spans");
     }
     if (!new Set(["input", "output"]).has(field)) throw new Error(`Unsupported field: ${field}`);
     const content = String(span[field] ?? "");
@@ -325,24 +410,29 @@ export class TraceRepository {
     };
   }
 
-  getToolExchange({ spanId, outputLength = 7000 }) {
+  getToolExchange({ spanId, outputLength = 7000, outputStart = 0 }) {
     const span = this.byId.get(spanId);
-    if (!span || span.spanType !== "TOOL") throw new Error(`Not a TOOL span: ${spanId}`);
+    if (!span || !isAuditableExecutionSpan(span)) throw new Error("Not an auditable Tool/Skill span: " + spanId);
     const parsedInput = parseJson(span.input);
     const content = String(span.output ?? "");
-    const end = Math.min(content.length, Math.min(MAX_CONTENT_CHARS, outputLength));
+    const start = Math.max(0, Number.parseInt(outputStart, 10) || 0);
+    const end = Math.min(content.length, start + Math.min(MAX_CONTENT_CHARS, Math.max(1, Number(outputLength) || 7000)));
     return {
       spanId: span.id,
       traceId: span.traceId,
       name: span.name,
+      executionKind: span.spanType === "TOOL" ? "tool" : "skill",
       timestamp: span.startTime,
       status: span.status,
       durationMs: span.costTime,
       request: parsedInput ? JSON.parse(redact(JSON.stringify(parsedInput))) : redact(span.input),
-      response: redact(content.slice(0, end)),
-      responseTruncated: end < content.length,
+      response: redact(content.slice(start, end)),
+      responseTruncated: start > 0 || end < content.length,
+      responseRange: { startOffset: start, endOffset: end, totalChars: content.length },
+      responseTotalChars: content.length,
+      requestTotalChars: String(span.input ?? "").length,
       requestEvidenceRef: evidenceRef(span, "input", 0, String(span.input ?? "").length),
-      responseEvidenceRef: evidenceRef(span, "output", 0, end),
+      responseEvidenceRef: evidenceRef(span, "output", start, end),
     };
   }
 

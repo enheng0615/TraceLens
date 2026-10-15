@@ -1,7 +1,7 @@
 {
-  "name": "trace-agent",
+  "name": "tracelens",
   "version": "1.0.0",
-  "description": "Evidence-driven Trace root cause analysis framework powered by Pi Agent Core",
+  "description": "Evidence-grounded investigation of agent traces, user feedback, and evaluation gaps",
   "scripts": {
     "check:pi": "node scripts/check-pi.mjs",
     "test": "node --test",
@@ -15,8 +15,13 @@
     "diagnose:sophon": "node --env-file=.env scripts/diagnose-sophon.mjs",
     "workflow:csv": "node --env-file=.env scripts/run-trace-rca-csv.mjs",
     "batch:filter-full-score": "node skills/trace-batch-full-score-filter/scripts/filter-full-score.mjs",
+    "feedback:filter-negative": "node scripts/filter-negative-feedback.mjs",
+    "feedback:test-timeline": "node scripts/inspect-feedback-timeline.mjs",
     "workflow:session": "node --env-file=.env scripts/run-trace-rca-session.mjs",
-    "web": "node --env-file=.env src/web/server.mjs"
+    "web": "node --env-file=.env src/web/server.mjs",
+    "feedback:analyze": "node --env-file=.env scripts/analyze-online-feedback.mjs",
+    "workflow:feedback": "node --env-file=.env scripts/run-feedback-workflow.mjs",
+    "workflow:feedback-batch": "node --env-file=.env scripts/run-feedback-batch-workflow.mjs"
   },
   "keywords": [
     "trace",

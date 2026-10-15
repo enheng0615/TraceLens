@@ -1,6 +1,9 @@
 import { readFile } from "node:fs/promises";
 import { extractSessionId } from "../../ingestion/sophon-trace/index.mjs";
 import { isFullScore } from "./score-utils.mjs";
+import { classifyEvaluationInputStatus } from "./evaluation-input.mjs";
+import { parseCsv } from "../csv.mjs";
+export { parseCsv } from "../csv.mjs";
 
 
 function isBlank(value) {
@@ -16,6 +19,11 @@ function isEmptyMachineGrading(value) {
   } catch {
     return false;
   }
+}
+
+function extractAgentId(value) {
+  const match = String(value ?? "").match(/(?:[?&]|\b)agentId=(\d+)/i);
+  return match?.[1] ?? "";
 }
 
 /**
@@ -48,43 +56,6 @@ export const DEFAULT_CSV_COLUMNS = {
   sessionUrl: ["ida_url", "query_url", "url"],
   idaAnswer: ["ida_答案", "ida_answer", "answer"],
 };
-
-/** RFC4180-compatible parser for quoted commas, quotes, and embedded newlines. */
-export function parseCsv(text) {
-  const source = String(text ?? "").replace(/^\uFEFF/, "");
-  const rows = [];
-  let row = [];
-  let field = "";
-  let quoted = false;
-  for (let index = 0; index < source.length; index += 1) {
-    const char = source[index];
-    if (quoted) {
-      if (char === '"' && source[index + 1] === '"') {
-        field += '"';
-        index += 1;
-      } else if (char === '"') quoted = false;
-      else field += char;
-      continue;
-    }
-    if (char === '"' && field.length === 0) quoted = true;
-    else if (char === ",") {
-      row.push(field);
-      field = "";
-    } else if (char === "\n" || char === "\r") {
-      if (char === "\r" && source[index + 1] === "\n") index += 1;
-      row.push(field);
-      rows.push(row);
-      row = [];
-      field = "";
-    } else field += char;
-  }
-  if (quoted) throw new Error("CSV contains an unterminated quoted field");
-  if (field.length || row.length) {
-    row.push(field);
-    rows.push(row);
-  }
-  return rows;
-}
 
 function uniqueHeaders(header) {
   const seen = new Map();
@@ -121,6 +92,8 @@ export async function readRcaCsv(filePath, { columns = {} } = {}) {
     if (values.every((value) => !String(value ?? "").trim())) continue;
     const record = Object.fromEntries(headers.map((header, index) => [header, values[index] ?? ""]));
     const rawSession = directSession ? String(record[directSession] ?? "").trim() : "";
+    const rawSessionUrl = sessionUrl ? String(record[sessionUrl] ?? "") : "";
+    const agentId = extractAgentId(rawSessionUrl || rawSession);
     let sessionId = /^\d+$/.test(rawSession) ? rawSession : "";
     let inputError;
     if (!sessionId) {
@@ -150,15 +123,25 @@ export async function readRcaCsv(filePath, { columns = {} } = {}) {
     const machineGrading = record[resolved.machineGrading];
     const idaAnswer = record[resolved.idaAnswer];
     const sourceRunStatus = classifySourceRunStatus({ sessionId, score, idaAnswer, machineGrading });
+    const evaluationInputStatus = sourceRunStatus || isFullScore(score) ? null : classifyEvaluationInputStatus({
+      score,
+      machineGrading,
+      groundTruth: record[resolved.groundTruth],
+    });
     records.push({
       rowNumber: rowIndex + 1,
       sessionId,
+      agentId,
       query: record[resolved.query],
       groundTruth: record[resolved.groundTruth],
       score,
       machineGrading,
       idaAnswer,
-      ...(sourceRunStatus ? { sourceRunStatus } : inputError ? { inputError } : {}),
+      ...(sourceRunStatus
+        ? { sourceRunStatus }
+        : inputError
+          ? { inputError }
+          : evaluationInputStatus ? { evaluationInputStatus } : {}),
     });
   }
   return { headers, columns: { ...resolved, sessionId: directSession, sessionUrl }, records };

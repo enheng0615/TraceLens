@@ -1,5 +1,6 @@
 import path from "node:path";
 import { readJson, sha256 } from "./file-store.mjs";
+import { assessEmbeddedResultTruncation } from "./truncation-assessment.mjs";
 
 function walkTree(node) {
   if (!node || typeof node !== "object") return [];
@@ -19,31 +20,53 @@ function payloadLength(value) {
   return typeof value === "string" ? value.length : JSON.stringify(value).length;
 }
 
-function findTruncationSignals(value, currentPath = "$") {
+function findTruncationSignals(value, currentPath = "$", { allowLiteralMarker = true } = {}) {
   const findings = [];
   if (Array.isArray(value)) {
     value.forEach((child, index) => {
-      findings.push(...findTruncationSignals(child, `${currentPath}[${index}]`));
+      findings.push(...findTruncationSignals(child, `${currentPath}[${index}]`, { allowLiteralMarker }));
     });
     return findings;
   }
   if (value && typeof value === "object") {
     for (const [key, child] of Object.entries(value)) {
       const childPath = `${currentPath}.${key}`;
-      if (/(truncat|omit|overflow)/i.test(key) && Boolean(child)) {
+      if (/^(?:isResultTruncated|resultTruncated|truncated)$/i.test(key) && child === true) {
         findings.push({ path: childPath, signal: safeSignal(child) });
       }
-      findings.push(...findTruncationSignals(child, childPath));
+      findings.push(...findTruncationSignals(child, childPath, { allowLiteralMarker }));
     }
     return findings;
   }
-  if (
-    typeof value === "string" &&
-    /(\[truncated\]|<truncated>|\.\.\.truncated)/i.test(value)
-  ) {
-    findings.push({ path: currentPath, signal: safeSignal(value) });
+  if (typeof value === "string") {
+    const text = value.trim();
+    if ((text.startsWith("{") || text.startsWith("[")) && text.length <= 10_000_000) {
+      try {
+        // Inspect the parsed fields, not the serialized wrapper. A shortened
+        // resources[].result can contain a literal marker while a sibling
+        // output field already preserves the complete payload.
+        return findTruncationSignals(JSON.parse(text), currentPath, { allowLiteralMarker });
+      } catch {
+        // Only valid nested JSON can promote a structured truncation flag.
+      }
+    }
+    // A marker inside a file preview or quoted history is not evidence that
+    // the enclosing Span was cut. Keep only terminal markers in raw fields.
+    if (allowLiteralMarker && /(?:\[truncated\]|<truncated>|\.\.\.truncated(?: due to length limit)?)\s*$/i.test(text)) {
+      findings.push({ path: currentPath, signal: safeSignal(value) });
+    }
   }
   return findings;
+}
+
+function findMissingTruncationSignals(value, currentPath = "$", options = {}) {
+  const availableCopies = assessEmbeddedResultTruncation(value, currentPath)
+    .filter((item) => item.classification === "display_copy_truncated_payload_available");
+  return findTruncationSignals(value, currentPath, options).filter((finding) =>
+    !availableCopies.some((item) =>
+      finding.path === item.flagPath || finding.path.startsWith(`${item.path}.`),
+    ),
+  );
 }
 
 function comparePayloads(left, right, field) {
@@ -82,9 +105,11 @@ export async function auditCollection({
     for (const node of walkTree(payload?.data)) {
       if (node?.id) {
         treeById.set(String(node.id), node);
-        for (const field of ["input", "output"]) {
+        for (const field of ["output"]) {
           truncationSignals.push(
-            ...findTruncationSignals(node?.[field], `$.data.${field}`).map((finding) => ({
+            ...findMissingTruncationSignals(node?.[field], `$.data.${field}`, {
+              allowLiteralMarker: node?.spanType === "TOOL",
+            }).map((finding) => ({
               spanId: String(node.id),
               source: path.relative(outputDirectory, filePath),
               ...finding,
@@ -101,10 +126,9 @@ export async function auditCollection({
   for (const [spanId, filePath] of spanDetailFiles) {
     const payload = await readJson(filePath);
     truncationSignals.push(
-      ...findTruncationSignals(payload?.data?.input, "$.data.input").map((finding) => ({
-        spanId: String(spanId), source: path.relative(outputDirectory, filePath), ...finding,
-      })),
-      ...findTruncationSignals(payload?.data?.output, "$.data.output").map((finding) => ({
+      ...findMissingTruncationSignals(payload?.data?.output, "$.data.output", {
+        allowLiteralMarker: payload?.data?.spanType === "TOOL",
+      }).map((finding) => ({
         spanId: String(spanId), source: path.relative(outputDirectory, filePath), ...finding,
       })),
     );

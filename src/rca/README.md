@@ -41,6 +41,7 @@ run-logger.mjs                    JSONL/Markdown审计日志
 run-summary.mjs                   成功运行的人类可读逐轮摘要
 failure-summary.mjs               失败运行摘要、缺口与恢复指令
 report-renderer.mjs               Markdown报告
+report-template.mjs               在线反馈与评分差距逐案报告的共用开头及字段校验
 prompts.mjs                       调查和报告输出合同
 offline-simulation-agent.mjs      仅用于固定回归的确定性模拟Agent
 ```
@@ -127,6 +128,7 @@ coverage.complete === true
 && decision.readyForConclusion === true
 && citationValidation.valid === true
 && evidenceConsistencyValidation.valid === true
+&& evidenceConsistencyValidation.reportOpening.valid === true
 && rawEvidenceValidation.valid === true
 ```
 
@@ -151,6 +153,7 @@ checkpoint.json                  已到达可恢复状态时存在
 - IDA引用精确或唯一展示归一化对齐；
 - 禁止Trace前因果分类；
 - Evidence ID必须真实存在；
+- 新报告必须提供一句根因及成因、具体问题类别和归类依据，使用[固定模板](../../docs/analysis-report-template.md)；
 - 搜索有非零命中时，报告不能宣称对应词在全Trace中零命中；
 - 没有重放/干预证据时，因果置信度不得为`high`；
 - 原始Span SHA-256复核；

@@ -108,6 +108,8 @@ export class OfflineSimulationAgent {
     } else if (phase === "final_rca") {
       result = {
         caseId: "session-29785869-gt-1",
+        rootCauseHeadline: "分析计划没有选择可用的就业状况维度，后续查询缺少主体组合统计，最终答案因此未保留Self-Employed限定。",
+        problemClassification: { category: "分析维度与查询规划缺漏", rationale: "Schema提供就业状况字段，但调查计划和查询没有按该维度形成组合统计。", evidenceIds: ["EV-008", "EV-011", "EV-013"] },
         executiveSummary: "在现有Trace可观察边界内，IDA先按贷款类型定位Personal Loan异常，再按贷款用途定位Debt Consolidation，并据此形成最终宽泛结论。数据Schema已向IDA提供就业状况字段，但后续分析规划和全部11个SQL均未使用该维度，因此运行过程中没有生成Self-Employed + Debt Consolidation + Personal Loan的组合统计，最终答案也无法保留该主体限定。Trace可以确认分叉发生在分析维度选择/查询规划阶段，但不能证明模型为什么没有选择就业状况维度。",
         scoreGap: { criterionId: "GT-1", observedDifference: "答案呈现Debt Consolidation用途的Personal Loan增加，但没有Self-Employed主体限定。" },
         actualAnswerProductionChain: [

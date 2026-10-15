@@ -130,3 +130,18 @@ test("structured fact groups accept full final Generation content without exact 
   assert.equal(result.complete, true);
   assert.deepEqual(result.checks.find((item) => item.details?.factGroupId)?.details.evidenceIds, ["EV-FINAL"]);
 });
+
+test("structured fact groups accept anchors distributed across Tool and Generation evidence", () => {
+  const groupedPolicy = {
+    allTraceSearches: ["客户等级"],
+    factEvidenceGroups: [{ id: "answer-fact-1", sourceQuote: "工作上的刚需满意度20.72%", anchors: ["工作上的刚需", "20.72%"] }],
+  };
+  const ledger = { entries: [
+    entry("search_trace", { query: "客户等级", scope: "all" }, { hits: [], totalMatches: 0 }),
+    { evidenceId: "EV-TOOL", ...entry("get_tool_exchange", {}, { name: "python_executor", request: {}, response: "工作上的刚需参与分类" }) },
+    { evidenceId: "EV-FINAL", ...entry("get_span_content", {}, { content: "满意度20.72%" }) },
+  ] };
+  const result = evaluateInvestigationCoverage(ledger, { policy: groupedPolicy });
+  assert.equal(result.complete, true);
+  assert.deepEqual(result.checks.at(-1).details.evidenceIds, ["EV-TOOL", "EV-FINAL"]);
+});

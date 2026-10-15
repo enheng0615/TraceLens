@@ -10,12 +10,16 @@ function assistantText(message) {
     .join("\n");
 }
 
-function extractJson(text) {
+export function extractAgentJson(text) {
   const trimmed = text.trim();
-  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1];
-  const candidate = fenced ?? trimmed.slice(trimmed.indexOf("{"), trimmed.lastIndexOf("}") + 1);
+  // JSON values may themselves contain Markdown fences copied from Trace.
+  // Prefer the actual object before considering an outer Markdown wrapper.
+  const fenced = trimmed.match(/^```(?:json)?[ \t]*\r?\n([\s\S]*)\r?\n```\s*$/i)?.[1];
+  const candidate = trimmed.startsWith("{") ? trimmed : fenced ?? trimmed.slice(trimmed.indexOf("{"), trimmed.lastIndexOf("}") + 1);
   if (!candidate) throw new Error("Model response did not contain a JSON object");
-  return parseJsonWithRepair(candidate);
+  const value = parseJsonWithRepair(candidate);
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Model response must be a JSON object");
+  return value;
 }
 
 function isTransientTransportError(message) {
@@ -114,7 +118,7 @@ export class PiJsonAgent {
 
       previousText = text ?? "";
       try {
-        const parsed = extractJson(previousText);
+        const parsed = extractAgentJson(previousText);
         await this.logger?.event({
           phase,
           actor: "rca_agent",

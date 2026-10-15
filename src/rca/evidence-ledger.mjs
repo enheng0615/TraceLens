@@ -75,23 +75,28 @@ function compactToolExchange(result) {
     timestamp: result.timestamp,
     status: result.status,
     durationMs: result.durationMs,
-    request: {
-      goal: request.goal,
-      instruction: truncate(request.instruction, 2600),
-      ansi_sql: truncate(request.ansi_sql, 2600),
-      query: request.query,
-      data_set_id_list: request.data_set_id_list,
-      code: truncate(request.code, 5000),
-      command: truncate(request.command, 3600),
-      file_path: request.file_path,
-      line_range: request.line_range,
-      action: request.action,
-      content: truncate(request.content, 5000),
-      ops_text: truncate(request.ops_text, 1800),
-    },
+    request: compactStructured(request),
+    requestFields: Object.keys(request),
+    fieldReader: { tool: "get_json_field", arguments: { spanId: result.spanId, field: "input", pointer: "/arguments" } },
     response: truncate(result.response, 2800),
     responseTruncatedInRawToolRead: result.responseTruncated,
+    responseTruncatedInModelContext: String(result.response ?? "").length > 2800,
+    responseTotalChars: result.responseTotalChars,
+    nextResponseOffset: result.responseRange?.endOffset,
   };
+}
+
+function compactStructured(value, depth = 0) {
+  if (typeof value === "string") return value.length <= 1800 ? value : {
+    preview: value.slice(0, 1800), totalChars: value.length, modelViewTruncated: true,
+    readInstruction: "Use get_json_field for the exact field; the full original is preserved.",
+  };
+  if (value === null || typeof value !== "object") return value;
+  if (depth > 8) return { modelViewTruncated: true, keys: Object.keys(value), readInstruction: "Use get_json_field" };
+  if (Array.isArray(value)) return value.length > 30
+    ? { items: value.slice(0, 30).map((v) => compactStructured(v, depth + 1)), totalItems: value.length, modelViewTruncated: true }
+    : value.map((v) => compactStructured(v, depth + 1));
+  return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, compactStructured(child, depth + 1)]));
 }
 
 function compactSpanContent(result) {
@@ -145,15 +150,33 @@ function compactOverview(result) {
         }
       : null,
     toolNames: result.toolNames,
+    skillNames: result.skillNames,
+    executionNames: result.executionNames,
   };
 }
 
 function compactResult(entry) {
+  if (entry.tool === "get_json_field") {
+    const { content, ...rest } = stripRawRefs(entry.result);
+    return rest.value !== undefined ? rest : { ...rest, content };
+  }
+  if (entry.tool === "get_tool_call_bundle") return {
+    spanId: entry.result.spanId, callId: entry.result.callId, status: entry.result.status,
+    emittedCall: entry.result.emittedCall ? compactStructured(stripRawRefs(entry.result.emittedCall)) : null,
+    historicalDefinition: entry.result.historicalDefinition ? {
+      status: entry.result.historicalDefinition.status, generationSpanId: entry.result.historicalDefinition.generationSpanId,
+      reader: { tool: "get_tool_definition_at_call", arguments: { spanId: entry.result.spanId } },
+    } : null,
+    consumers: (entry.result.consumers ?? []).map(({ message, ...link }) => link),
+    totalConsumers: entry.result.totalConsumers, unavailableLayers: entry.result.unavailableLayers,
+    note: entry.result.note,
+  };
   if (entry.tool === "search_trace") return compactSearch(entry.result);
   if (entry.tool === "get_tool_exchange") return compactToolExchange(entry.result);
   if (entry.tool === "get_span_content") return compactSpanContent(entry.result);
   if (entry.tool === "list_tool_queries" && Array.isArray(entry.result)) return compactQueries(entry.result);
   if (entry.tool === "list_execution_steps" && Array.isArray(entry.result)) return compactExecutionSteps(entry.result);
+  if (entry.tool === "list_execution_steps" && Array.isArray(entry.result?.steps)) return { ...entry.result, steps: compactExecutionSteps(entry.result.steps) };
   if (entry.tool === "get_trace_overview") return compactOverview(entry.result);
   return stripRawRefs(entry.result);
 }

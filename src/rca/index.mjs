@@ -7,3 +7,5 @@ export { EvidenceLedger } from "./evidence-ledger.mjs";
 export { TraceRepository, traceText } from "./trace-repository.mjs";
 export { TRACE_TOOL_DOCS, executeTraceTool, normalizeAction } from "./trace-tools.mjs";
 export { validateScoringGapTarget } from "./scoring-gap.mjs";
+export { runOnlineFeedbackCase } from "./scenarios/online-feedback.mjs";
+export { validateCausalClosure } from "./causal-closure.mjs";

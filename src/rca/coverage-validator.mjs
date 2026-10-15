@@ -1,4 +1,4 @@
-import { findFactGroupEvidence } from "./fact-evidence.mjs";
+import { findCompositeFactGroupEvidence } from "./fact-evidence.mjs";
 
 function lower(value) {
   return String(value ?? "").toLocaleLowerCase();
@@ -37,11 +37,22 @@ export function evaluateInvestigationCoverage(ledger, { policy, executionSteps =
   }
   if ((policy.factEvidenceGroups ?? []).length) {
     for (const group of policy.factEvidenceGroups) {
-      const evidence = findFactGroupEvidence(entries, group);
+      const evidence = findCompositeFactGroupEvidence(entries, group);
+      const attemptedSearches = (group.anchors ?? []).map((anchor) => searches.find(
+        (entry) => lower(entry.arguments?.query) === lower(anchor) && entry.arguments?.scope === "all",
+      ));
+      const checkedButUnobservable = attemptedSearches.length > 0 && attemptedSearches.every(Boolean);
       checks.push([
-        evidence.length > 0,
+        evidence.complete || checkedButUnobservable,
         `定位实际答案事实组：${group.anchors.join(" + ")}`,
-        { factGroupId: group.id, sourceQuote: group.sourceQuote, anchors: group.anchors, evidenceIds: evidence.map((item) => item.evidenceId) },
+        {
+          factGroupId: group.id, sourceQuote: group.sourceQuote, anchors: group.anchors,
+          evidenceIds: evidence.complete
+            ? evidence.evidenceIds
+            : attemptedSearches.filter(Boolean).map((item) => item.evidenceId),
+          matchedAnchors: evidence.matchedAnchors,
+          disposition: evidence.complete ? "supported" : checkedButUnobservable ? "unobservable_after_deterministic_search" : "not_checked",
+        },
       ]);
     }
   } else {
@@ -74,10 +85,14 @@ export function evaluateInvestigationCoverage(ledger, { policy, executionSteps =
   }
 
   const missing = checks.filter(([ok]) => !ok).map(([, description]) => description);
+  const unobservable = checks
+    .filter(([, , details]) => details?.disposition === "unobservable_after_deterministic_search")
+    .map(([, description, details]) => ({ description, details }));
   return {
     complete: missing.length === 0,
     policy,
     checks: checks.map(([ok, description, details]) => ({ ok, description, ...(details ? { details } : {}) })),
     missing,
+    unobservable,
   };
 }

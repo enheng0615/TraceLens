@@ -168,4 +168,13 @@ src/ingestion/sophon-trace/
 <session>/expanded-tool-results/<span-id>.json
 ```
 
-原始 URL 不进入 Manifest、Agent 上下文或报告；仅保留文件路径哈希、内容哈希、字符数与恢复状态。Trace Repository 会把补拉内容作为该 Span 的扩展输出纳入确定性搜索和原始证据校验。下载失败时完整性为 `partial_recoverable`，不会静默忽略。
+原始 URL 不进入 Manifest、Agent 上下文或报告；仅保留文件路径哈希、内容哈希、字符数与恢复状态。Trace Repository 会把补拉内容作为该 Span 的扩展输出纳入确定性搜索和原始证据校验。下载失败且原始 Span 中确实缺少完整正文时，完整性为 `partial_recoverable`，不会静默忽略。
+
+完整性审计会先检查同一 Span 是否已在 `output` 等字段保存完整正文。如果只有 `resources[].result` 这份展示副本被缩短，而完整正文仍在原始 Span 中，就不把该 Span 判为缺失。普通文件预览内部的截断提示也不等于整个 Span 被截断。RCA 的读取长度限制只影响单次呈现给分析器的片段，不会裁剪本地保存的原始 Span。
+
+可对已缓存的 Session 重新计算派生的完整性报告。默认只预览，加入 `--write` 后会先备份原报告，再更新 `integrity-report.json` 和 `manifest.json`；原始 Span 文件不会被改写，也不会请求 Sophon：
+
+```bash
+node scripts/re-audit-sophon-cache.mjs data/raw/sophon-sessions/<session-id>
+node scripts/re-audit-sophon-cache.mjs --write data/raw/sophon-sessions/<session-id>
+```

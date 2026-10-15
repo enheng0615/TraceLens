@@ -94,7 +94,7 @@ export class SophonSessionCollector {
     this.fetchImpl = fetchImpl;
   }
 
-  async lookupSession({ outputDirectory, sessionId, agentType, pageSize, force }) {
+  async lookupSession({ outputDirectory, sessionId, agentType, agentIdHint, pageSize, force }) {
     const sessionListPath = path.join(outputDirectory, "session/list.json");
     if (!force && (await isValidJsonFile(sessionListPath))) {
       const cached = await readJson(sessionListPath);
@@ -126,6 +126,68 @@ export class SophonSessionCollector {
     if (matchingSessions(recent, sessionId).length === 1) {
       await writeJsonAtomic(sessionListPath, recent);
       return { payload: recent, strategy: "recent", windowsQueried: 1 };
+    }
+
+    // SESSION_INDEX can miss a recent Session even though the direct Session
+    // endpoint can read it. Evaluation URLs already carry the non-secret
+    // agentId routing key, so probe directly before historical lookback.
+    if (agentIdHint) {
+      const agentId = assertIdentifier(agentIdHint, "agentId");
+      const directPath = path.join(lookupDirectory, "direct-get.json");
+      try {
+        const direct = await this.client.fetchJson(
+          directPath,
+          [
+            "session", "get", sessionId,
+            "--agent-type", agentType,
+            "--agent-id", agentId,
+            "--page-size", String(pageSize),
+            "--all",
+            "--max-bytes", "104857600",
+          ],
+          { force: true },
+        );
+        const turns = direct?.data?.turns;
+        if (Array.isArray(turns) && turns.length) {
+          const starts = turns.map((turn) => Number(turn.startTime)).filter(Number.isFinite);
+          const ends = turns.map((turn) => Number(turn.endTime)).filter(Number.isFinite);
+          const traceIds = [...new Set(turns.map((turn) => turn.businessTraceId).filter(Boolean).map(String))];
+          if (starts.length && ends.length && traceIds.length) {
+            const payload = {
+              success: true,
+              data: {
+                sessions: [{
+                  sessionId, agentId,
+                  startTime: Math.min(...starts), endTime: Math.max(...ends),
+                  traceCount: traceIds.length, latestTraceId: traceIds.at(-1),
+                }],
+                hasMore: false,
+              },
+            };
+            await writeJsonAtomic(sessionListPath, payload);
+            this.logger.info?.("Session " + sessionId + " 未命中SESSION_INDEX，已通过直接Session查询恢复");
+            return { payload, strategy: "direct_session_get", windowsQueried: 1 };
+          }
+        }
+        throw new TraceIngestionError("直接Session查询未返回可用Turn、时间范围或Trace ID", {
+          code: "DIRECT_SESSION_RESPONSE_INCOMPLETE",
+          details: { sessionId, turnCount: Array.isArray(turns) ? turns.length : null },
+        });
+      } catch (error) {
+        this.logger.warn?.("Session " + sessionId + " 直接查询未恢复：" + (error.code || error.message));
+        throw new TraceIngestionError(
+          "Session " + sessionId + " 未命中SESSION_INDEX，且按agentId直接查询失败",
+          {
+            code: "SESSION_DIRECT_LOOKUP_FAILED",
+            details: {
+              sessionId,
+              agentId,
+              causeCode: error.code ?? null,
+              causeMessage: error.message,
+            },
+          },
+        );
+      }
     }
 
     const serverRecentStart = Number(recent?.data?.startTime);
@@ -166,6 +228,7 @@ export class SophonSessionCollector {
 
   async collect({
     sessionId,
+    agentIdHint,
     agentType = "ida",
     pageSize = 200,
     paddingMs = 300_000,
@@ -236,6 +299,7 @@ export class SophonSessionCollector {
         outputDirectory,
         sessionId: normalizedSessionId,
         agentType: normalizedAgentType,
+        agentIdHint,
         pageSize,
         force,
       });

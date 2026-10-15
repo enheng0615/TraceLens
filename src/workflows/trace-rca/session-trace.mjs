@@ -42,6 +42,7 @@ export function createSessionCollector({ traceOutputRoot, ingestion = {}, logger
 
 export async function ensureSessionTrace({
   sessionId,
+  agentId,
   traceOutputRoot,
   collector,
   ingestion = {},
@@ -59,6 +60,7 @@ export async function ensureSessionTrace({
   if (!collector) throw new Error("A SophonSessionCollector is required when Trace is not already complete");
   const result = await collector.collect({
     sessionId: String(sessionId),
+    agentIdHint: agentId || ingestion.agentId,
     agentType: ingestion.agentType || "ida",
     pageSize: ingestion.pageSize ?? 200,
     paddingMs: ingestion.paddingMs ?? 300_000,

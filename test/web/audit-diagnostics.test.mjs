@@ -70,3 +70,18 @@ test("Web diagnosis explains Sophon's 30-day Session lookup limit", async () => 
   assert.equal(diagnosis.code, "SOPHON_CLI_ERROR");
   assert.match(diagnosis.remediation, /小于30天的窗口逐段回溯/);
 });
+
+test("completed batch diagnosis uses the dominant Manifest failure instead of stale process context", async () => {
+  const diagnosis = await buildJobDiagnosis({
+    id: "job-completed-partial", type: "csv", status: "completed_with_failures",
+    failureContext: { stage: "input_validation", code: "OLD", message: "stale context" },
+    stderr: [],
+  }, { items: [
+    { status: "failed", error: { code: "RCA_INVESTIGATION_STALLED", message: "Investigation stalled" } },
+    { status: "failed", error: { code: "RCA_INVESTIGATION_STALLED", message: "Investigation stalled again" } },
+    { status: "failed", stage: "preparation", error: { code: "CASE_TRACE_MISMATCH", message: "mismatch" } },
+  ] });
+  assert.equal(diagnosis.stage, "investigation");
+  assert.equal(diagnosis.stageLabel, "Trace调查");
+  assert.equal(diagnosis.code, "RCA_INVESTIGATION_STALLED");
+});

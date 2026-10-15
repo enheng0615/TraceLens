@@ -17,7 +17,7 @@ export function selectableSessionCandidates(manifest) {
   ];
   for (const record of records) {
     const sessionId = String(record?.sessionId ?? "").trim();
-    if (!sessionId || record?.status === "source_run_failed" || record?.initialStatus === "source_run_failed") continue;
+    if (!sessionId || ["source_run_failed", "evaluation_input_issue"].includes(record?.status) || ["source_run_failed", "evaluation_input_issue"].includes(record?.initialStatus)) continue;
     if (!groups.has(sessionId)) groups.set(sessionId, new Set());
     const rowNumber = Number(record?.rowNumber);
     if (Number.isFinite(rowNumber)) groups.get(sessionId).add(rowNumber);
@@ -58,6 +58,7 @@ export function summarizeEffectiveItems(attempts) {
     failed: items.filter((item) => item.status === "failed").length,
     skipped: items.filter((item) => item.status === "skipped").length,
     sourceRunFailed: items.filter((item) => item.status === "source_run_failed").length,
+    evaluationInputIssues: items.filter((item) => item.status === "evaluation_input_issue").length,
     running: items.filter((item) => item.status === "running").length,
   };
 }

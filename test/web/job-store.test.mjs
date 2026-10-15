@@ -3,12 +3,25 @@ import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { WebJobStore } from "../../src/web/job-store.mjs";
+import { WebJobStore, MAX_CAPTURED_LINES, appendCapturedLine } from "../../src/web/job-store.mjs";
 
 async function store() {
   const root = await mkdtemp(path.join(os.tmpdir(), "trace-web-store-"));
   return new WebJobStore({ projectRoot: root, outputRoot: path.join(root, "web"), traceOutputRoot: path.join(root, "trace") }).initialize();
 }
+
+test("captured child-process output is bounded and initializes missing stream arrays", () => {
+  const job = {};
+  appendCapturedLine(job, "stdout", "first");
+  assert.deepEqual(job.stdout, ["first"]);
+  for (let index = 0; index < MAX_CAPTURED_LINES + 12; index += 1) {
+    appendCapturedLine(job, "stderr", `line-${index}`);
+  }
+  assert.equal(job.stderr.length, MAX_CAPTURED_LINES);
+  assert.equal(job.stderr[0], "line-12");
+  assert.equal(job.stderr.at(-1), `line-${MAX_CAPTURED_LINES + 11}`);
+  assert.doesNotThrow(() => appendCapturedLine(job, "unknown", "ignored"));
+});
 
 test("validates session form before spawning a workflow", async () => {
   const jobs = await store();
@@ -30,6 +43,87 @@ test("CSV jobs validate and persist bounded Session concurrency", async () => {
   assert.deepEqual(stored.commandArgs.slice(stored.commandArgs.indexOf("--concurrency"), stored.commandArgs.indexOf("--concurrency") + 2), ["--concurrency", "4"]);
   const failFast = await jobs.createCsv({ fileName: "serial.csv", csvText: "a\n1", failFast: true });
   assert.equal(failFast.inputSummary.concurrency, 1);
+});
+
+test("feedback batch validates candidates and creates one tracked batch job", async () => {
+  const jobs = await store();
+  jobs.start = () => {};
+  await assert.rejects(jobs.createFeedbackBatch({ csvText: "session_id,request_query\nx,bad" }), /第 2 行.*数字/);
+  const job = await jobs.createFeedbackBatch({ fileName: "feedback.csv", csvText: "session_id,request_query,label\n101,wrong,negative\n102,ok,positive" });
+  assert.equal(job.type, "feedback-batch");
+  assert.equal(job.inputSummary.candidates, 1);
+  assert.equal(job.inputSummary.excludedRows, 1);
+  assert.equal(jobs.list().length, 1);
+  assert.ok(jobs.jobs.get(job.id).commandArgs.includes("scripts/run-feedback-batch-workflow.mjs"));
+});
+
+test("feedback batch accepts a category directory and persists Session controls", async () => {
+  const jobs = await store();
+  jobs.start = () => {};
+  const sourceDir = path.join(jobs.projectRoot, "five-categories");
+  await mkdir(sourceDir);
+  await writeFile(path.join(sourceDir, "类别A_labeled.csv"), "session_id,request_query,label,task_id\n101,wrong,negative,t1\n102,ok,positive,t2");
+  await writeFile(path.join(sourceDir, "类别B_labeled.csv"), "session_id,request_query,label,task_id\n103,also wrong,negative,t3");
+  const job = await jobs.createFeedbackBatch({ sourceDir, sessionStart: 2, sessionCount: 1, concurrency: 4 });
+  assert.equal(job.inputSummary.inputType, "directory");
+  assert.equal(job.inputSummary.sourceFiles, 2);
+  assert.equal(job.inputSummary.totalSessions, 2);
+  assert.equal(job.inputSummary.selectedSessions, 1);
+  assert.equal(job.inputSummary.candidates, 1);
+  assert.equal(job.inputSummary.nextSessionStart, null);
+  assert.equal(job.inputSummary.concurrency, 4);
+  assert.match(await readFile(job.inputPath, "utf8"), /feedback_candidate_id,session_id/);
+  const args = jobs.jobs.get(job.id).commandArgs;
+  assert.deepEqual(args.slice(args.indexOf("--session-count"), args.indexOf("--session-count") + 4), ["--session-count", "1", "--concurrency", "4"]);
+  await assert.rejects(jobs.createFeedbackBatch({ csvText: "session_id,request_query\n101,x", concurrency: 17 }), /并行线程数/);
+});
+
+test("feedback batch full retry reuses its input snapshot and Session window", async () => {
+  const jobs = await store();
+  jobs.start = () => {};
+  const first = await jobs.createFeedbackBatch({ csvText: "session_id,request_query\n101,first\n102,second\n103,third",
+    sessionStart: 2, sessionCount: 1, concurrency: 2 });
+  jobs.jobs.get(first.id).status = "completed";
+  const retry = await jobs.createRetry(first.id, { scope: "full", concurrency: 4 });
+  assert.equal(retry.lineage.parentJobId, first.id);
+  assert.equal(retry.inputSummary.sessionStart, 2);
+  assert.equal(retry.inputSummary.selectedSessions, 1);
+  assert.equal(retry.inputSummary.concurrency, 4);
+  assert.equal(await readFile(retry.inputPath, "utf8"), await readFile(first.inputPath, "utf8"));
+  await assert.rejects(jobs.createRetry(first.id, { scope: "failed_only" }), /只支持完整重跑/);
+});
+
+test("feedback continuation uses the first batch snapshot and is idempotent", async () => {
+  const jobs = await store();
+  jobs.start = () => {};
+  const rows = ["session_id,request_query"];
+  for (let id = 1; id <= 301; id += 1) rows.push(`${id},feedback-${id}`);
+  const first = await jobs.createFeedbackBatch({ fileName: "feedback.csv", csvText: rows.join("\n"),
+    sessionStart: 1, sessionCount: 150, concurrency: 4 });
+  assert.equal(first.inputSummary.nextSessionStart, 151);
+  await assert.rejects(jobs.createNextFeedbackBatch(first.id), /等待当前批次结束/);
+  jobs.jobs.get(first.id).status = "completed";
+  const [second, duplicate] = await Promise.all([
+    jobs.createNextFeedbackBatch(first.id), jobs.createNextFeedbackBatch(first.id),
+  ]);
+  assert.equal(second.id, duplicate.id);
+  assert.equal(second.inputSummary.sessionStart, 151);
+  assert.equal(second.inputSummary.selectedSessions, 150);
+  assert.equal(second.inputSummary.nextSessionStart, 301);
+  assert.equal(second.batchSeries.previousJobId, first.id);
+  assert.equal(second.batchSeries.batchNumber, 2);
+  assert.equal(await readFile(second.inputPath, "utf8"), await readFile(first.inputPath, "utf8"));
+  assert.equal((await jobs.createNextFeedbackBatch(first.id)).id, second.id);
+  jobs.jobs.get(second.id).status = "completed";
+  const third = await jobs.createNextFeedbackBatch(second.id);
+  assert.equal(third.inputSummary.sessionStart, 301);
+  assert.equal(third.inputSummary.selectedSessions, 1);
+  assert.equal(third.inputSummary.nextSessionStart, null);
+  jobs.jobs.get(third.id).status = "completed";
+  await assert.rejects(jobs.createNextFeedbackBatch(third.id), /已全部选完/);
+  const detail = await jobs.details(first.id);
+  assert.equal(detail.continuation.canCreate, false);
+  assert.equal(detail.continuation.nextJobId, second.id);
 });
 
 test("artifact reads are constrained to the job directory and text formats", async () => {
@@ -200,6 +294,28 @@ test("report tree exposes Session-level failure and source-run diagnostics", asy
   assert.match(source.issue.detail, /Session ID为空/);
 });
 
+test("report tree exposes evaluation input issues without counting them as failures", async () => {
+  const { buildReportTree } = await import("../../src/web/job-store.mjs");
+  const tree = buildReportTree({
+    job: { id: "job-evaluation-issues", type: "csv", status: "completed_no_action", createdAt: "2026-09-28T00:00:00.000Z", jobDir: "/tmp/job-evaluation-issues", lineage: { attempt: 1 } },
+    manifest: {
+      executionPlan: { nonFullScoreRows: 1, records: [{ rowNumber: 55, sessionId: "30658545", initialStatus: "evaluation_input_issue" }] },
+      items: [{
+        rowNumber: 55, sessionId: "30658545", status: "evaluation_input_issue", stage: "evaluation_input",
+        code: "EVALUATION_SCORE_OR_TARGET_MISSING", label: "评测结果缺失：无分数和未命中项",
+        detail: "score为空，机评未产出可用分数；机评未包含可识别的未命中GT。", remediation: "检查上游评测。",
+      }],
+    },
+    artifacts: [],
+  });
+  const [session] = tree.sessions;
+  assert.equal(session.status, "evaluation_input_issue");
+  assert.equal(session.counts.failed, 0);
+  assert.equal(session.counts.evaluationInputIssues, 1);
+  assert.equal(session.issue.kind, "evaluation_input_issue");
+  assert.match(session.issue.detail, /score为空/);
+});
+
 test("failed-only retry creates an immutable child attempt and copies the input snapshot", async () => {
   const jobs = await store();
   const parentId = "job-parent";
@@ -366,7 +482,7 @@ test("a later partial retry still exposes unresolved failures from the whole att
   jobs.jobs.set(rootId, root);
   jobs.jobs.set(childId, child);
   const detail = await jobs.details(childId);
-  assert.deepEqual(detail.chainSummary, { total: 2, completed: 1, failed: 1, skipped: 0, sourceRunFailed: 0, running: 0 });
+  assert.deepEqual(detail.chainSummary, { total: 2, completed: 1, failed: 1, skipped: 0, sourceRunFailed: 0, evaluationInputIssues: 0, running: 0 });
   assert.equal(detail.retry.failedItems.length, 1);
   assert.equal(detail.retry.failedItems[0].sessionId, "200");
   assert.equal(detail.retry.canRetryFailed, true);

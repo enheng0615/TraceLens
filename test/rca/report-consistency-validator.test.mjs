@@ -104,3 +104,33 @@ test("one-character searches do not contradict absence of a longer compound requ
   };
   assert.equal(validateReportEvidenceConsistency(report, shortLedger).valid, true);
 });
+
+test("does not misread inability to prove absence as an absence assertion", () => {
+  const partialLedger = { entries: [{
+    evidenceId: "EV-N", tool: "search_trace", arguments: { query: "-7.23", scope: "all" },
+    result: { totalMatches: 0, coverage: { negativeEvidenceEligible: false } },
+  }] };
+  const report = {
+    executiveSummary: "无法证明完整Trace中不存在-7.23。",
+    evidenceBoundary: { notProven: "截断Tool输出仍未知。" },
+    rootCauseAssessment: { confidence: "medium", evidenceIds: ["EV-N"] },
+  };
+  assert.equal(validateReportEvidenceConsistency(report, partialLedger).valid, true);
+});
+
+test("pure-number lexical hits do not contradict a scoped semantic absence claim", () => {
+  const numericLedger = { entries: [{
+    evidenceId: "EV-820", tool: "search_trace", arguments: { query: "820", scope: "all" },
+    result: { totalMatches: 1055 },
+  }] };
+  const scoped = {
+    executiveSummary: "未发现将820作为VaseVolume合理范围使用的计算证据。",
+    rootCauseAssessment: { confidence: "medium", evidenceIds: ["EV-820"] },
+  };
+  assert.equal(validateReportEvidenceConsistency(scoped, numericLedger).valid, true);
+  const literal = {
+    executiveSummary: "字符820在整个Trace任何位置一次都未出现。",
+    rootCauseAssessment: { confidence: "medium", evidenceIds: ["EV-820"] },
+  };
+  assert.equal(validateReportEvidenceConsistency(literal, numericLedger).valid, false);
+});

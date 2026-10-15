@@ -21,11 +21,12 @@ test("maps the evaluation CSV and keeps JWT-bearing URLs out of records", async 
   const row = [
     "query", "1", JSON.stringify({ 结论: { groundTruth: ["gt"] } }), "x", "y", "0.5",
     JSON.stringify({ complete_v2: { 用户需求一致性: [] } }),
-    "https://ida.example/agent/session?jwtToken=SECRET&sessionId=30509282", "1", "answer\nline2",
+    "https://ida.example/agent/session?agentId=17368&jwtToken=SECRET&sessionId=30509282", "1", "answer\nline2",
   ];
   await writeFile(file, `${header.map(quote).join(",")}\n${row.map(quote).join(",")}\n`, "utf8");
   const result = await readRcaCsv(file);
   assert.equal(result.records[0].sessionId, "30509282");
+  assert.equal(result.records[0].agentId, "17368");
   assert.equal(result.records[0].idaAnswer, "answer\nline2");
   assert.equal(JSON.stringify(result.records).includes("SECRET"), false);
   assert.equal(JSON.stringify(result.records).includes("jwtToken"), false);
@@ -84,4 +85,34 @@ test("readRcaCsv writes the four-condition source status instead of an input err
   assert.equal(result.records[0].inputError, undefined);
   assert.equal(result.records[0].sourceRunStatus.status, "source_run_failed");
   assert.equal(result.records[0].sourceRunStatus.detail, "Session ID 为空；score 为空；IDA 答案为空或 failed；机评为空或 {}");
+});
+
+test("readRcaCsv classifies incomplete evaluation output without calling it an RCA failure", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "trace-rca-evaluation-status-"));
+  const file = path.join(root, "evaluation-incomplete.csv");
+  const header = ["问题", "gt_attribution", "ida_结论报告评分", "ida_decompressed_data", "ida_url", "ida_答案"];
+  const grading = JSON.stringify({ origin_critic_res: {}, score_dict: { error100: 0 }, agent_type: "ida" });
+  const row = ["q", JSON.stringify({ 结论: { groundTruth: ["required"] } }), "", grading, "sessionId=30658545", "answer"];
+  await writeFile(file, `${header.map(quote).join(",")}\n${row.map(quote).join(",")}\n`, "utf8");
+  const result = await readRcaCsv(file);
+  assert.equal(result.records[0].evaluationInputStatus.status, "evaluation_input_issue");
+  assert.equal(result.records[0].evaluationInputStatus.code, "EVALUATION_SCORE_OR_TARGET_MISSING");
+  assert.match(result.records[0].evaluationInputStatus.detail, /score为空/);
+  assert.match(result.records[0].evaluationInputStatus.detail, /origin_critic_res为空对象/);
+  assert.equal(result.records[0].inputError, undefined);
+});
+
+test("readRcaCsv reports every missing evaluation component for empty GT rows", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "trace-rca-evaluation-empty-"));
+  const file = path.join(root, "evaluation-empty.csv");
+  const header = ["问题", "gt_attribution", "ida_结论报告评分", "ida_decompressed_data", "ida_url", "ida_答案"];
+  const grading = JSON.stringify({ origin_critic_res: { missing_indicators: [] }, score_dict: { error100: 0, labeling_eval_score: [] } });
+  const row = ["q", "", "", grading, "sessionId=30665165", "answer"];
+  await writeFile(file, `${header.map(quote).join(",")}\n${row.map(quote).join(",")}\n`, "utf8");
+  const result = await readRcaCsv(file);
+  const issue = result.records[0].evaluationInputStatus;
+  assert.equal(issue.label, "评测结果缺失：无分数、无GT和未命中项");
+  assert.match(issue.detail, /GT为空/);
+  assert.match(issue.detail, /missing_indicators为空数组/);
+  assert.match(issue.detail, /labeling_eval_score为空数组/);
 });

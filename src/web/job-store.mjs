@@ -5,6 +5,8 @@ import path from "node:path";
 import { WebAuditLogger } from "./audit-logger.mjs";
 import { buildJobDiagnosis, renderWebFailureSummary } from "./job-diagnostics.mjs";
 import { isFullScore, readRcaCsv } from "../workflows/trace-rca/index.mjs";
+import { parseFeedbackBatchCsv, selectFeedbackBatchSessions } from "../workflows/online-feedback/feedback-batch.mjs";
+import { filterNegativeFeedbackDirectory } from "../workflows/online-feedback/negative-feedback-filter.mjs";
 import { TERMINAL_JOB_STATUSES, WEB_FAILURE_JSON, WEB_FAILURE_MD, WEB_JOB_LOG } from "./job-model.mjs";
 import { calculateWorkflowProgress } from "./job-progress.mjs";
 import { buildReportTree, artifactLabel, criterionIdFromPath, sessionIdFromPath } from "./report-tree.mjs";
@@ -14,6 +16,17 @@ import { effectiveAttemptItems, retryItemKey, selectableSessionCandidates, summa
 export { calculateWorkflowProgress, buildReportTree };
 
 const JOB_FILE = "job.json";
+
+// Keep the Web Job JSON bounded. Workflow files remain the complete audit
+// source; the Job object only needs a recent, readable console tail.
+export const MAX_CAPTURED_LINES = 400;
+
+export function appendCapturedLine(job, target, line) {
+  if (!job || !["stdout", "stderr"].includes(target)) return;
+  if (!Array.isArray(job[target])) job[target] = [];
+  job[target].push(line);
+  while (job[target].length > MAX_CAPTURED_LINES) job[target].shift();
+}
 
 function now() {
   return new Date().toISOString();
@@ -85,6 +98,7 @@ export class WebJobStore {
     this.processes = new Map();
     this.writeQueues = new Map();
     this.attemptCounters = new Map();
+    this.continuationPromises = new Map();
     this.audit = new WebAuditLogger(this.outputRoot);
   }
 
@@ -330,6 +344,128 @@ export class WebJobStore {
     return path.join(inputDirectory, files[0].name);
   }
 
+  async createFeedback(payload, lineage = null) {
+    if (payload.maxRounds !== undefined && !Number.isInteger(Number(payload.maxRounds))) throw new Error("maxRounds必须是整数");
+    const { maxRounds } = this.validateCommon({ ...payload, maxRounds: payload.maxRounds ?? 12 });
+    if (payload.mode && payload.mode !== "live") throw new Error("负向反馈分析使用Live模式，不支持离线样例代替真实结果");
+    const sessionId = String(payload.sessionId ?? "").trim();
+    const requestQuery = String(payload.requestQuery ?? "");
+    if (!/^\d+$/.test(sessionId)) throw new Error("Session ID必须是纯数字");
+    if (!requestQuery.trim()) throw new Error("请填写用户负向反馈原文");
+    if (requestQuery.length > 50000) throw new Error("反馈原文不能超过50000字符");
+    const maxTurns = Number(payload.maxTurns ?? 24);
+    if (!Number.isInteger(maxTurns) || maxTurns < 1 || maxTurns > 100) throw new Error("历史窗口上限必须是1到100之间的整数");
+    if (payload.agentId && !/^[A-Za-z0-9._:-]+$/.test(String(payload.agentId))) throw new Error("Agent ID格式无效");
+    if (payload.agentType && !["ida", "aide_solo", "aide_mix"].includes(payload.agentType)) throw new Error("Agent类型无效");
+    for (const key of ["timelineRoot", "traceRoot"]) if (payload[key] && typeof payload[key] !== "string") throw new Error("数据目录必须是字符串");
+    const id = `job-${Date.now()}-${randomUUID().slice(0, 8)}`;
+    const jobDir = this.jobDirectory(id);
+    const inputPath = path.join(jobDir, "input", "feedback.json");
+    const workflowRoot = path.join(jobDir, "workflows");
+    const input = { sessionId, requestQuery, requestIdList: String(payload.requestIdList ?? ""),
+      timelineRoot: payload.timelineRoot || undefined, traceRoot: payload.traceRoot || undefined,
+      agentId: payload.agentId || undefined, agentType: payload.agentType || "ida", fetchMissing: payload.fetchMissing !== false };
+    await writeJsonAtomic(inputPath, input);
+    const job = { id, type: "feedback", status: "queued", createdAt: now(), updatedAt: now(), jobDir, workflowRoot, inputPath,
+      lineage: lineage ?? { rootJobId: id, parentJobId: null, attempt: 1, scope: "initial" }, runtime: await runtimeSnapshot(this.projectRoot, this.env),
+      inputSummary: { sessionId, maxRounds, maxTurns, mode: "live", scenario: "online-feedback" },
+      progress: { percent: 2, stage: "queued", label: "等待启动负向反馈分析" }, stdout: [], stderr: [],
+      commandArgs: ["--env-file=.env", "scripts/run-feedback-workflow.mjs", "--input", inputPath, "--workflow-output-root", workflowRoot,
+        "--trace-output-root", this.traceOutputRoot, "--max-rounds", String(maxRounds), "--max-turns", String(maxTurns)] };
+    await this.persist(job);
+    await this.audit.job(job, lineage ? "retry_created" : "job_created", { type: job.type, lineage: job.lineage, input: job.inputSummary });
+    this.start(job); return publicJob(job);
+  }
+
+  async createFeedbackBatch(payload, lineage = null, { batchSeries = null, sourceMetadata = null } = {}) {
+    if (payload.maxRounds !== undefined && !Number.isInteger(Number(payload.maxRounds))) throw new Error("maxRounds必须是整数");
+    const { maxRounds } = this.validateCommon({ ...payload, maxRounds: payload.maxRounds ?? 12 });
+    const maxTurns = Number(payload.maxTurns ?? 24);
+    if (!Number.isInteger(maxTurns) || maxTurns < 1 || maxTurns > 100) throw new Error("历史窗口上限必须是1到100之间的整数");
+    const sourceDir = String(payload.sourceDir ?? "").trim();
+    const uploadedCsv = String(payload.csvText ?? "");
+    if (sourceDir && uploadedCsv.trim()) throw new Error("请选择目录或 CSV 文件中的一种输入方式");
+    if (!sourceDir && !uploadedCsv.trim()) throw new Error("请选择反馈 CSV 文件或填写五类文件目录");
+    if (!sourceMetadata && Buffer.byteLength(uploadedCsv, "utf8") > 20 * 1024 * 1024) throw new Error("CSV不能超过20MB");
+    const numericOption = (value, fallback, name, maximum) => {
+      const number = Number(value ?? fallback);
+      if (!Number.isInteger(number) || number < 1 || number > maximum) throw new Error(`${name}必须是1到${maximum}之间的整数`);
+      return number;
+    };
+    const sessionStart = numericOption(payload.sessionStart, 1, "起始 Session 序号", Number.MAX_SAFE_INTEGER);
+    const sessionCount = numericOption(payload.sessionCount, 10, "每批 Session 数", 150);
+    const concurrency = numericOption(payload.concurrency, 3, "并行线程数", 16);
+    const id = `job-${Date.now()}-${randomUUID().slice(0, 8)}`;
+    const jobDir = this.jobDirectory(id);
+    const inputName = sourceDir ? "negative-feedback-candidates.csv" : safeFileName(payload.fileName, "feedback.csv");
+    const inputPath = sourceDir ? path.join(jobDir, "input", "filtered", inputName)
+      : path.join(jobDir, "input", inputName.endsWith(".csv") ? inputName : `${inputName}.csv`);
+    const workflowRoot = path.join(jobDir, "workflows");
+    let csvText = uploadedCsv;
+    let sourceSummary = null;
+    if (sourceDir) {
+      const filtered = await filterNegativeFeedbackDirectory({ inputDir: sourceDir, outputDir: path.join(jobDir, "input", "filtered") });
+      sourceSummary = filtered.summary;
+      csvText = await readFile(filtered.candidatesPath, "utf8");
+    } else {
+      await mkdir(path.dirname(inputPath), { recursive: true });
+      await writeFile(inputPath, csvText, "utf8");
+    }
+    const parsed = selectFeedbackBatchSessions(parseFeedbackBatchCsv(csvText), { sessionStart, sessionCount });
+    const job = { id, type: "feedback-batch", status: "queued", createdAt: now(), updatedAt: now(), jobDir, workflowRoot, inputPath,
+      batchSeries: batchSeries ?? { rootJobId: id, previousJobId: null, batchNumber: 1 },
+      lineage: lineage ?? { rootJobId: id, parentJobId: null, attempt: 1, scope: "initial" }, runtime: await runtimeSnapshot(this.projectRoot, this.env),
+      inputSummary: { fileName: payload.sourceDisplayName || (sourceDir ? path.basename(path.resolve(sourceDir)) : inputName), inputType: sourceMetadata?.inputType ?? (sourceDir ? "directory" : "csv"),
+        sourceFiles: sourceMetadata?.sourceFiles ?? sourceSummary?.sourceFiles ?? 1, bytes: Buffer.byteLength(csvText, "utf8"), candidates: parsed.candidates.length,
+        totalSessions: parsed.totalSessions, selectedSessions: parsed.selectedSessions, sessionStart, sessionCount,
+        nextSessionStart: parsed.nextSessionStart, concurrency, excludedRows: parsed.excludedRows,
+        duplicateRows: parsed.duplicateRows, maxRounds, maxTurns, mode: "live", scenario: "online-feedback" },
+      progress: { percent: 2, stage: "queued", label: "等待启动负向反馈批次" }, stdout: [], stderr: [],
+      commandArgs: ["--env-file=.env", "scripts/run-feedback-batch-workflow.mjs", "--csv", inputPath,
+        "--workflow-output-root", workflowRoot, "--trace-output-root", this.traceOutputRoot,
+        "--max-rounds", String(maxRounds), "--max-turns", String(maxTurns),
+        "--session-start", String(sessionStart), "--session-count", String(sessionCount), "--concurrency", String(concurrency)] };
+    await this.persist(job);
+    await this.audit.job(job, lineage ? "retry_created" : "job_created", { type: job.type, lineage: job.lineage,
+      input: job.inputSummary, inputSnapshot: path.relative(job.jobDir, inputPath) });
+    this.start(job);
+    return publicJob(job);
+  }
+
+  async createNextFeedbackBatch(parentId, payload = {}) {
+    if (this.continuationPromises.has(parentId)) return this.continuationPromises.get(parentId);
+    const pending = this.createNextFeedbackBatchUnlocked(parentId, payload);
+    this.continuationPromises.set(parentId, pending);
+    try { return await pending; }
+    finally { this.continuationPromises.delete(parentId); }
+  }
+
+  async createNextFeedbackBatchUnlocked(parentId, payload) {
+    const parent = this.jobs.get(parentId);
+    if (!parent) return null;
+    if (parent.type !== "feedback-batch" || parent.lineage?.scope !== "initial") {
+      throw new Error("只能从原始负向反馈批次继续下一批；复跑任务请返回原批次");
+    }
+    if (!TERMINAL_JOB_STATUSES.has(parent.status)) throw new Error("请等待当前批次结束后再继续下一批");
+    const nextStart = parent.inputSummary?.nextSessionStart;
+    if (!nextStart) throw new Error("候选 Session 已全部选完，没有下一批");
+    const existing = [...this.jobs.values()].find((job) => job.type === "feedback-batch"
+      && job.lineage?.scope === "initial" && job.batchSeries?.previousJobId === parentId);
+    if (existing) return publicJob(existing);
+    const csvText = await readFile(await this.resolveInputPath(parent), "utf8");
+    const rootJobId = parent.batchSeries?.rootJobId || parent.id;
+    return this.createFeedbackBatch({ csvText, fileName: path.basename(parent.inputPath),
+      sourceDisplayName: parent.inputSummary.fileName, sessionStart: nextStart,
+      sessionCount: payload.sessionCount ?? parent.inputSummary.sessionCount,
+      concurrency: payload.concurrency ?? parent.inputSummary.concurrency,
+      maxRounds: payload.maxRounds ?? parent.inputSummary.maxRounds,
+      maxTurns: parent.inputSummary.maxTurns }, null, {
+      batchSeries: { rootJobId, previousJobId: parent.id,
+        batchNumber: (parent.batchSeries?.batchNumber || 1) + 1 },
+      sourceMetadata: { inputType: parent.inputSummary.inputType, sourceFiles: parent.inputSummary.sourceFiles },
+    });
+  }
+
   reserveRetryAttempt(rootJobId) {
     const current = this.attemptCounters.get(rootJobId) ?? Math.max(1, ...[...this.jobs.values()]
       .filter((item) => (item.lineage?.rootJobId || item.id) === rootJobId)
@@ -370,6 +506,28 @@ export class WebJobStore {
     }
     if (scope === "selected_sessions" && parent.type !== "csv") {
       throw new Error("指定Session复跑只适用于CSV批次");
+    }
+    if (parent.type === "feedback") {
+      if (scope === "failed_only" && parent.status !== "failed") throw new Error("该负向反馈任务没有失败项，请选择完整重跑");
+      const input = await readJson(await this.resolveInputPath(parent));
+      if (!input) throw new Error("原始反馈输入快照不可读");
+      const rootJobId = parent.lineage?.rootJobId || parent.id;
+      return this.createFeedback({ ...input, maxRounds: payload.maxRounds ?? parent.inputSummary.maxRounds, maxTurns: parent.inputSummary.maxTurns }, {
+        rootJobId, parentJobId: parent.id, attempt: this.reserveRetryAttempt(rootJobId), scope, reason: compactLine(payload.reason || ""),
+      });
+    }
+    if (parent.type === "feedback-batch") {
+      if (scope !== "full") throw new Error("负向反馈批次当前只支持完整重跑");
+      const csvText = await readFile(await this.resolveInputPath(parent), "utf8");
+      const rootJobId = parent.lineage?.rootJobId || parent.id;
+      return this.createFeedbackBatch({ csvText, fileName: path.basename(parent.inputPath),
+        sourceDisplayName: parent.inputSummary.fileName, maxRounds: payload.maxRounds ?? parent.inputSummary.maxRounds,
+        maxTurns: parent.inputSummary.maxTurns, sessionStart: parent.inputSummary.sessionStart,
+        sessionCount: parent.inputSummary.sessionCount, concurrency: payload.concurrency ?? parent.inputSummary.concurrency }, {
+        rootJobId, parentJobId: parent.id, attempt: this.reserveRetryAttempt(rootJobId), scope,
+        reason: compactLine(payload.reason || ""),
+      }, { batchSeries: parent.batchSeries,
+        sourceMetadata: { inputType: parent.inputSummary.inputType, sourceFiles: parent.inputSummary.sourceFiles } });
     }
     const { maxRounds, mode } = this.validateCommon({
       maxRounds: payload.maxRounds ?? parent.inputSummary?.maxRounds ?? 20,
@@ -568,7 +726,7 @@ export class WebJobStore {
     job.progress = { percent: 5, stage: "starting", label: "启动全链路任务" };
     void this.audit.job(job, "process_started", {
       pid: child.pid,
-      script: job.type === "csv" ? "run-trace-rca-csv.mjs" : "run-trace-rca-session.mjs",
+      script: job.type === "feedback" ? "run-feedback-workflow.mjs" : job.type === "feedback-batch" ? "run-feedback-batch-workflow.mjs" : job.type === "csv" ? "run-trace-rca-csv.mjs" : "run-trace-rca-session.mjs",
       mode: job.inputSummary?.mode,
       maxRounds: job.inputSummary?.maxRounds,
       concurrency: job.inputSummary?.concurrency ?? 1,
@@ -585,8 +743,7 @@ export class WebJobStore {
         for (const raw of lines) {
           const line = compactLine(raw);
           if (!line) continue;
-          job[target].push(line);
-          if (job[target].length > MAX_CAPTURED_LINES) job[target].shift();
+          appendCapturedLine(job, target, line);
           this.updateProgress(job, line);
           void this.audit.job(job, target === "stderr" ? "process_stderr" : "process_stdout", { line }, target === "stderr" ? "error" : "info");
         }
@@ -594,7 +751,7 @@ export class WebJobStore {
       });
       stream.on("end", () => {
         const line = compactLine(pending);
-        if (line) job[target].push(line);
+        if (line) appendCapturedLine(job, target, line);
       });
     };
     capture(child.stdout, "stdout");
@@ -624,7 +781,7 @@ export class WebJobStore {
       job.progress = {
         percent: TERMINAL_JOB_STATUSES.has(job.status) ? 100 : job.progress.percent,
         stage: job.status,
-        label: job.status === "completed" ? "归因报告已生成" : job.status === "completed_with_evidence_gaps" ? "归因完成，Trace局部不完整" : job.status === "cancelled" ? "任务已取消" : job.status,
+        label: job.status === "completed" ? "归因报告已生成" : job.status === "completed_with_evidence_gaps" ? (["feedback", "feedback-batch"].includes(job.type) ? "反馈报告已生成，仍有未决事项" : "归因完成，Trace局部不完整") : job.status === "completed_with_failures" && job.type === "feedback-batch" ? "反馈分析完成，部分条目失败" : job.status === "cancelled" ? "任务已取消" : job.status,
       };
       await this.audit.job(job, "process_exited", {
         exitCode: code,
@@ -661,7 +818,11 @@ export class WebJobStore {
           executionPlan: {
             schemaVersion: "trace-rca-execution-plan-v1", unit: "csv_row", inputRows: parsed.records.length,
             fullScoreRows: parsed.records.length - records.length, nonFullScoreRows: records.length,
-            records: records.map((record) => ({ rowNumber: record.rowNumber, sessionId: String(record.sessionId ?? ""), initialStatus: record.sourceRunStatus ? "source_run_failed" : "queued" })),
+            records: records.map((record) => ({
+              rowNumber: record.rowNumber,
+              sessionId: String(record.sessionId ?? ""),
+              initialStatus: record.sourceRunStatus ? "source_run_failed" : record.evaluationInputStatus ? "evaluation_input_issue" : "queued",
+            })),
             source: "web_input_fallback",
           },
         };
@@ -682,7 +843,7 @@ export class WebJobStore {
         criterionId,
         sessionId: sessionIdFromPath(relativePath),
         bytes: info.size,
-        kind: file.endsWith("rca-report.md") ? "report" : /failure-(?:summary|diagnosis)|web-failure-summary/.test(file) ? "failure" : /(?:agent-run|web-job)\.(?:md|jsonl)$/.test(file) ? "log" : "data",
+        kind: /(?:rca|feedback)-report\.md$/.test(file) ? "report" : /failure-(?:summary|diagnosis)|web-failure-summary/.test(file) ? "failure" : /(?:agent-run|web-job)\.(?:md|jsonl)$/.test(file) ? "log" : "data",
       });
     }
     const eventFiles = files.filter((file) => file.endsWith("agent-run.jsonl"));
@@ -732,11 +893,24 @@ export class WebJobStore {
       previousAttempt: item.attempt,
     }));
     const reportTree = buildReportTree({ job, manifest, artifacts });
+    const feedbackItem = job.type === "feedback" ? manifest?.items?.[0] : null;
+    const nextFeedbackBatch = job.type === "feedback-batch" && job.lineage?.scope === "initial"
+      ? [...this.jobs.values()].find((item) => item.type === "feedback-batch"
+        && item.lineage?.scope === "initial" && item.batchSeries?.previousJobId === job.id)
+      : null;
     return {
-      ...publicJob(job), manifest, artifacts, reportTree, events: events.slice(-160), webEvents: webEvents.slice(-80), relatedJobs, chainSummary,
+      ...publicJob(job), manifest, artifacts, reportTree, feedbackSummary: feedbackItem ? {
+        feedbackAssessment: feedbackItem.feedbackAssessment, causalInvestigationStatus: feedbackItem.causalInvestigationStatus,
+        problemClassification: feedbackItem.problemClassification,
+      } : null, events: events.slice(-160), webEvents: webEvents.slice(-80), relatedJobs, chainSummary,
+      continuation: job.type === "feedback-batch" ? {
+        canCreate: job.lineage?.scope === "initial" && TERMINAL_JOB_STATUSES.has(job.status)
+          && Boolean(job.inputSummary?.nextSessionStart) && !nextFeedbackBatch,
+        nextJobId: nextFeedbackBatch?.id ?? null,
+      } : null,
       retry: {
         canRetryFull: TERMINAL_JOB_STATUSES.has(job.status),
-        canRetryFailed: TERMINAL_JOB_STATUSES.has(job.status) && failedItems.length > 0 && !(job.type === "csv" && job.inputSummary?.failFast) && !baselineIncomplete,
+        canRetryFailed: TERMINAL_JOB_STATUSES.has(job.status) && job.type !== "feedback-batch" && failedItems.length > 0 && !(job.type === "csv" && job.inputSummary?.failFast) && !baselineIncomplete,
         canRetrySelectedSessions: TERMINAL_JOB_STATUSES.has(job.status) && job.type === "csv" && selectableSessionCandidates(manifest).length > 0,
         selectableSessions: selectableSessionCandidates(manifest),
         failedItems,

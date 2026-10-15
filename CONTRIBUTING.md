@@ -1,12 +1,12 @@
 # Contributing
 
-感谢参与 Trace RCA Agent。提交改动前请遵循以下约定。
+感谢参与 TraceLens。提交改动前请遵循以下约定。
 
 ## 本地开发
 
 ```bash
 git clone <repository-url>
-cd trace_agent
+cd tracelens
 npm ci
 cp .env.example .env  # 只有真实联调时才需要填写
 npm test
