@@ -1,7 +1,7 @@
 <p align="center"><img src="src/web/public/assets/tracelens-logo.png" width="360" alt="TraceLens logo"></p>
 
 <p align="center">
-  基于执行 Trace 的证据驱动根因分析框架
+  沿 Agent Trace 核验证据，解释负向反馈与评测失分
 </p>
 
 # TraceLens
@@ -31,7 +31,7 @@ TraceLens 是一个面向 Agent 执行记录的本地调查工作台。它接受
 - **确定性护栏**：程序校验调查覆盖、引用、搜索重放、因果置信度和报告一致性。
 - **批量编排**：支持 CSV、满分预过滤、Session 级并发、同 Session Trace 复用和失败隔离。
 - **断点与复跑**：保留 Checkpoint、失败摘要与不可变 Attempt，不用伪完成报告掩盖失败。
-- **本地工作台**：提供任务创建、进度、Batch → Session → GT 报告浏览和选择性复跑。
+- **本地工作台**：提供任务创建、进度、Batch → Session → 调查项报告浏览和选择性复跑。
 - **多模型适配**：封装 Sophon、OpenAI 与 Anthropic Provider；当前正式 RCA 调查路径由 Sophon 结构化 JSON Action 驱动。
 
 ## 工作原理

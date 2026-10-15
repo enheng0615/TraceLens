@@ -1,6 +1,6 @@
 # TraceLens Web Console
 
-第一版 Web 工作台是现有全链路模块的薄界面，不复制 RCA 业务逻辑：
+本地 Web 工作台是现有全链路模块的薄界面，不复制 RCA 业务逻辑：
 
 ```text
 Browser
